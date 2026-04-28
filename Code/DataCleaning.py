@@ -1,6 +1,7 @@
 '''
     How the data should look:
     data = {
+    --- general ---
     "volunteers": ["v001", "v002", ...],  # list of volunteer IDs
     
     "date": ["2025-11-15", "2025-11-16", ...],  # all standby dates in season
@@ -69,6 +70,29 @@
         "weekend_02": ["STB", "SPS"],  # HDB/STB alternate
         ...
     }
+
+    #--- control ---
+    "ctrl_weeks": [...],
+    "ctrl_availability": {...},
+    "ctrl_quals": {
+        "v001": {
+            "role": "Ctrl",
+            "active": True,
+        },
+        ...
+    },
+
+    # --- dispatch ---
+    "disp_weeks": [...],
+    "disp_availability": {...},
+    "disp_quals": {
+        "v001": {
+            "role": "Disp",
+            "seniority": "mgr", # mgr, norm, trainee
+            "active": True
+        },
+        ...
+    },
 }
 
 '''
