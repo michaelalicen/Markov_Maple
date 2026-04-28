@@ -78,9 +78,9 @@
 
     #--- control ---
     "ctrl_volunteer": [<volunteer_id_ctrl>],
-    "ctrl_weeks": [...],
+    "ctrl_week": [...],
     "ctrl_availability": {...},
-    "ctrl_quals": {
+    "ctrl_qual": {
         "v001": {
             "role": "Ctrl",
             "disp_control": True # whether this volunteer can be dispatched to control and dispatch simultaneously
@@ -90,10 +90,10 @@
 
     # --- dispatch ---
     "disp_volunteer": [<volunteer_id_disp>],
-    "disp_weeks": [...],
+    "disp_week": [...],
     "disp_availability": {...},
     "disp_role": ["mgr", "norm", "trainee"],
-    "disp_quals": {
+    "disp_qual": {
         "v001": {
             "role": "Disp",
             "seniority": "mgr",
