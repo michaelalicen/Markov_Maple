@@ -10,17 +10,50 @@ from ortools.sat.python import cp_model
         "extra_shift_role": "role_id"
     }
 '''
-def parse_input(data):
-   # Take the cleaned data and put it into dictionaries/lists for easy access in the model
 
-# Build the decision variable
-def decision_variable(model, volunteer_id, date, base_id, role_id):
-    return model.NewBoolVar(f"x[{volunteer_id},{date},{base_id},{role_id}]")
-
-# build the initial cp_model
-def build_cp_model():
+def build_and_solve(data):
     model = cp_model.CpModel()
+    
+    volunteer = data["volunteer"]
+    availability = data["availability"]
+    qual = data["qual"]
+    date = data["date"]
+    base = data["base"]
+    role = data["role"]
+
+    # main vws variable
+    # creates an empty dictionary
+    x = {}
+    for v in volunteer:
+        for d in date:
+            for b in base:
+                for r in role:
+                    if(base_eligibility(v, b, qual) and is_active(v, qual)):
+                        x[v, d, b, r] = model.NewBoolVar(f"x[{v},{d},{b},{r}]")
+
+    # helitack variable
+    x_heli = {}
+    
+
+    # control variable
+
+    # dispatch variable
+
     return model
+
+def base_eligibility(v, b, qual):
+    # Check if volunteer v is eligible for base b
+    if b in qual[v]["preferred_bases"]:
+        return True
+    elif b in qual[v]["dual_bases"]:
+        return True
+    else:
+        return False
+
+def is_active(v, qual):
+    # Check if volunteer v is active
+    return qual[v]["active"]
+
 
 '''
     Assignment priority
@@ -58,3 +91,11 @@ def hard_constraints(model):
 def soft_constraints(model):
     # Define the soft constraints here
     model.Add(...)
+
+def solver(model):
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+    if status == cp_model.OPTIMAL:
+        print("Solution found!")
+    else:
+        print("No solution found.")

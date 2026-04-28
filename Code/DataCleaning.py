@@ -1,12 +1,79 @@
 '''
-    How the data should end up looking
-    availability[volunteer_id][date] = True/False
-    quals[volunteer_id] = {
-        "roles": [],
-        "trainee_roles": [],
-        "active": True/False,
-        "preferred_bases": "[base1, base2, base3]",
-        "extra_shifts": [0,1,2,3,4,5],
-        "extra_shift_role": "role_id"
+    How the data should look:
+    data = {
+    "volunteers": ["v001", "v002", ...],  # list of volunteer IDs
+    
+    "date": ["2025-11-15", "2025-11-16", ...],  # all standby dates in season
+    
+    "base": ["HDB", "STB", "SPS", "NWL"],
+    
+    "role": ["FF", "recruit_FF", "ACL", "trainee_ACL", "CL", 
+              "crew_driver", "skid_driver", "logistics", "helitack",
+              "control", "dispatch"],
+    
+    "availability": {
+        "v001": {
+            "2025-11-15": True,
+            "2025-11-16": False,
+            ...
+        },
+        ...
+    },
+    
+    "qual": {
+        "v001": {
+            "role": ["CL", "ACL", "FF"],        # fully qualified roles
+            "trainee_roles": [],                   # roles still in training
+            "active": True,
+            "home_base": "HDB",
+            "dual_bases": ["NWL"],                 # bases they'll cover as dual
+            "preferred_bases": ["HDB"],
+            "extra_shifts": 2,                     # how many extras willing to do
+            "extra_shift_role": "CL",              # preferred role for extras
+            "is_helitack": False,
+            "helitack_role": None                  # e.g. "spotter", "rappeller"
+        },
+        ...
+    },
+    
+    "demand": {
+        "HDB": {
+            "2025-11-15": {
+                "FF": 4,
+                "CL": 1,
+                "ACL": 1,
+                "skid_driver": 1,
+                "crew_driver": 1,
+                "logistics": 1,
+                ...
+            },
+            ...
+        },
+        ...
+    },
+    
+    "pairing_requests": [
+        ("v001", "v002"),  # these two have requested to be paired
+        ...
+    ],
+    
+    "weekend_map": {
+        "2025-11-15": "weekend_01",  # map individual dates to their weekend
+        "2025-11-16": "weekend_01",
+        "2025-11-22": "weekend_02",
+        ...
+    },
+    
+    "base_schedule": {
+        "weekend_01": ["HDB", "SPS"],  # which bases are active this weekend
+        "weekend_02": ["STB", "SPS"],  # HDB/STB alternate
+        ...
     }
+}
+
 '''
+
+def load_and_validate(data):
+    # Validate and clean the input data
+    # Return structured data for availability and qualifications
+    pass
