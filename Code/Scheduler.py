@@ -1,15 +1,4 @@
 from ortools.sat.python import cp_model
-'''
-    availability[volunteer_id][date] = True/False
-    quals[volunteer_id] = {
-        "roles": [],
-        "trainee_roles": [],
-        "active": True/False,
-        "preferred_bases": "[base1, base2, base3]",
-        "extra_shifts": [0,1,2,3,4,5],
-        "extra_shift_role": "role_id"
-    }
-'''
 
 def build_and_solve(data):
     model = cp_model.CpModel()
@@ -21,6 +10,17 @@ def build_and_solve(data):
     base = data["base"]
     role = data["role"]
 
+    ctrl_volunteer = data["ctrl_volunteer"]
+    ctrl_availability = data["ctrl_availability"]
+    ctrl_quals = data["ctrl_quals"]
+    ctrl_weeks = data["ctrl_weeks"]
+
+    disp_volunteer = data["disp_volunteer"]
+    disp_availability = data["disp_availability"]
+    disp_quals = data["disp_quals"]
+    disp_weeks = data["disp_weeks"]
+    disp_role = data["disp_role"]
+
     # main vws variable
     # creates an empty dictionary
     x = {}
@@ -28,16 +28,40 @@ def build_and_solve(data):
         for d in date:
             for b in base:
                 for r in role:
-                    if(base_eligibility(v, b, qual) and is_active(v, qual)):
+                    if(availability.get(v, {}).get(d, False) 
+                        and base_eligibility(v, b, qual) 
+                        and is_active(v, qual)):
                         x[v, d, b, r] = model.NewBoolVar(f"x[{v},{d},{b},{r}]")
 
     # helitack variable
     x_heli = {}
-    
+    for v in [v for v in volunteer if qual[v]["is_helitack"]]:
+        for d in date:
+            if availability.get(v, {}).get(d, False):
+                x_heli[v, d] = model.NewBoolVar(f"heli[{v},{d}]")
+
 
     # control variable
+    x_ctrl = {}
+    for v in [v for v in ctrl_volunteer if ctrl_quals[v]["active"]]:
+        for d in ctrl_weeks:
+            if ctrl_availability.get(v, {}).get(d, False):
+                x_ctrl[v, d] = model.NewBoolVar(f"ctrl[{v},{d}]")
 
     # dispatch variable
+    x_disp = {}
+    for v in [v for v in disp_volunteer if disp_quals[v]["active"]]:
+        for d in disp_weeks:
+            for r in disp_role:
+                if disp_availability.get(v, {}).get(d, False):
+                    x_disp[v, d, r] = model.NewBoolVar(f"disp[{v},{d},{r}]")
+
+    # hard constraints
+
+    # soft penalties
+    # minimise penalties
+
+    # solver.Solve(model)
 
     return model
 
@@ -50,23 +74,6 @@ def base_eligibility(v, b, qual):
     else:
         return False
 
-def is_active(v, qual):
-    # Check if volunteer v is active
-    return qual[v]["active"]
-
-
-'''
-    Assignment priority
-    1. Non-fireline: Logistics & Planning
-    2. Drivers: Skids first, then crew
-    3. Crew Leaders: Use duals if gaps
-    4. ACLs: Trainee ACLs later in season
-    5-6. Firefighters: Recruits, then general FFs
-'''
-def objective_function(model):
-    # Define the objective function here
-    model.Maximize(...)
-
 '''
     Coverage: sum(x[v,d,b,r] for v) == demand[d][b][r] — every required slot must be filled
     Availability: x[v,d,b,r] = 0 if volunteer not available on that day
@@ -77,8 +84,73 @@ def objective_function(model):
 
 '''
 def hard_constraints(model):
-    # Define the hard constraints here
-    model.Add(...)
+    date  = data["date"]
+    base  = data["base"]
+    role  = data["role"]
+    demand  = data["demand"]
+    qual  = data["qual"]
+
+
+
+    # Every demand slot must be filled
+    # General
+    for d in dates:
+        for b in bases:
+            for r in roles:
+                assigned = [
+                    x[v, d, b, r]
+                    for v in volunteer
+                    if (v, d, b, r) in x
+                ]
+                model.Add(sum(assigned) == demand[d][b][r])
+
+    # Helitack
+    helitack_demand = data["helitack_demand"]
+    for d in dates:
+        required = helitack_demand.get(d, 0)
+        if required == 0:
+            continue
+
+        assigned_heli = [
+            x_heli[v, d]
+            for v in volunteers
+            if (v, d) in x_heli
+        ]
+        model.Add(sum(assigned_heli) == required)
+
+    # Control
+    for w in data["ctrl_weeks"]:
+        assigned_ctrl = [
+            x_ctrl[v, w]
+            for v in data["ctrl_quals"]
+            if (v, w) in x_ctrl
+        ]
+    model.Add(sum(assigned_ctrl) == 1)
+
+    # Dispatch
+    
+
+    # Ensuring no cross-conflict
+    weeks_to_weekends = data["weeks_to_weekends"]
+    for v in volunteers:
+        if v not in ctrl_quals:
+            continue
+
+        for w in ctrl_weeks:
+            if (v, w) not in x_ctrl:
+                continue
+
+            overlapping_dates = weeks_to_weekends[w]
+            vws_assignments = [
+                x[v, d, b, r]
+                for d in overlapping_dates
+                for b in bases
+                for r in roles
+                if (v, d, b, r) in x
+            ]
+
+            if vws_assignments:
+                model.Add(sum(vws_assignments) + x_ctrl[v, w] <= 1)
 
 '''
     Fairness: Minimise imbalance in total shifts assigned — use max deviation from mean as penalty term
