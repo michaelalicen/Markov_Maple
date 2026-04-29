@@ -77,14 +77,21 @@
     #--- heli-tack ---
     "heli_volunteer": [<volunteer_id_heli>],
     "heli_week": [...],
-    "heli_availability": {...},
+    "heli_demand": {
+        "2025-11-15": {
+            "FF": 2,
+            "CL": 1,
+            "ACL": 1
+        },
+        ...
+    },
     "heli_qual": {
         "v001": {
             "role": "CL",        # one of: "CL", "ACL", "FF", "FF2YR"
             "station": "NWL"     # one of: "NWL", "SPS", "STB", "HDB"
         },
 
-}
+    },
 
     #--- control ---
     "ctrl_volunteer": [<volunteer_id_ctrl>],
