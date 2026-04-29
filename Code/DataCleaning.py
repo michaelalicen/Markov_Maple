@@ -30,8 +30,6 @@
             "preferred_bases": ["HDB"],
             "extra_shifts": 2,                     # how many extras willing to do
             "extra_shift_role": "CL",              # preferred role for extras
-            "is_helitack": False,
-            "helitack_role": None                  # e.g. "spotter", "rappeller"
         },
         ...
     },
@@ -75,6 +73,18 @@
         "weekend_02": ["STB", "SPS"],  # HDB/STB alternate
         ...
     }
+
+    #--- heli-tack ---
+    "heli_volunteer": [<volunteer_id_heli>],
+    "heli_week": [...],
+    "heli_availability": {...},
+    "heli_qual": {
+        "v001": {
+            "role": "CL",        # one of: "CL", "ACL", "FF", "FF2YR"
+            "station": "NWL"     # one of: "NWL", "SPS", "STB", "HDB"
+        },
+
+}
 
     #--- control ---
     "ctrl_volunteer": [<volunteer_id_ctrl>],
