@@ -26,8 +26,8 @@
             "role": ["CL", "ACL", "FF"],        # fully qualified roles
             "trainee_roles": [],                   # roles still in training
             "home_base": "HDB",
-            "dual_bases": ["NWL"],                 # bases they'll cover as dual
-            "preferred_bases": ["HDB"],
+            "secondary_base": "STB",
+            "tertiary_base": "None",
             "extra_shifts": 2,                     # how many extras willing to do
             "extra_shift_role": "CL",              # preferred role for extras
         },
