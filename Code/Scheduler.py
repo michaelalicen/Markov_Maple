@@ -1,30 +1,33 @@
 from ortools.sat.python import cp_model
 
+volunteer = data.get("volunteer", [])
+availability = data.get("availability", {})
+qual = data.get("qual", {})
+date = data.get("date", [])
+base = data.get("base", [])
+role = data.get("role", [])
+demand  = data.get("demand", {})
+
+ctrl_volunteer = data.get("ctrl_volunteer", [])
+ctrl_availability = data.get("ctrl_availability", {})
+ctrl_qual = data.get("ctrl_qual", {})
+ctrl_week = data.get("ctrl_week", [])
+
+disp_volunteer = data.get("disp_volunteer", [])
+disp_availability = data.get("disp_availability", {})
+disp_qual = data.get("disp_qual", {})
+disp_week = data.get("disp_week", [])
+disp_role = data.get("disp_role", [])
+
+heli_volunteer = data.get("heli_volunteer", [])
+heli_qual = data.get("heli_qual", {})
+heli_week = data.get("heli_week", [])
+
+weeks_to_weekends = data.get("weeks_to_weekends", {})
+
 def build_and_solve(data):
     model = cp_model.CpModel()
     
-    volunteer = data.get("volunteer", [])
-    availability = data.get("availability", {})
-    qual = data.get("qual", {})
-    date = data.get("date", [])
-    base = data.get("base", [])
-    role = data.get("role", [])
-
-    ctrl_volunteer = data.get("ctrl_volunteer", [])
-    ctrl_availability = data.get("ctrl_availability", {})
-    ctrl_qual = data.get("ctrl_qual", {})
-    ctrl_week = data.get("ctrl_week", [])
-
-    disp_volunteer = data.get("disp_volunteer", [])
-    disp_availability = data.get("disp_availability", {})
-    disp_qual = data.get("disp_qual", {})
-    disp_week = data.get("disp_week", [])
-    disp_role = data.get("disp_role", [])
-
-    heli_volunteer = data.get("heli_volunteer", [])
-    heli_qual = data.get("heli_qual", {})
-    heli_week = data.get("heli_week", [])
-
     # main vws variable
     x = {}
     for v in volunteer:
@@ -67,9 +70,7 @@ def build_and_solve(data):
     # solver
     solver = cp_model.CpSolver()
     status = solver.Solve(model)
-
     return solver, status, x, x_heli, x_ctrl, x_disp, model
-
 
 def base_eligibility(v, b, qual):
     # Check if volunteer v is eligible for base b
@@ -81,25 +82,12 @@ def base_eligibility(v, b, qual):
         return True
     return (b in prefs) or (b in duals) or (home == b)
 
-'''
-    Coverage: sum(x[v,d,b,r] for v) == demand[d][b][r] — every required slot must be filled
-    Availability: x[v,d,b,r] = 0 if volunteer not available on that day
-    Qualification: x[v,d,b,r] = 0 if volunteer not qualified for that role (handled by pre-filter)
-    Once per weekend: sum(x[v,d,b,r] for all b,r on weekend w) <= 1
-    Trainee pairing: if trainee driver/ACL assigned, at least one senior in that role on same crew
-    Helitack submodel: Helitack pool and demand solved separately; ~7 CLs for 26 dates is tight
+def hard_constraints(model, x, x_ctrl, x_disp, x_heli):
+    demand_general(model, x)
+    demand_heli(model, x_heli)
+    demand_contr_disp(model, x_ctrl, x_disp)
 
-'''
-def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
-    date  = data.get("date", [])
-    base  = data.get("base", [])
-    role  = data.get("role", [])
-    demand  = data.get("demand", {})
-    availability = data.get("availability", {})
-    qual = data.get("qual", {})
-    disp_volunteer = data.get("disp_volunteer", [])
-    disp_availability = data.get("disp_availability", {})
-
+def demand_general(model):
     # Every demand slot must be filled (support both demand shapes)
     for d in date:
         for b in base:
@@ -119,7 +107,7 @@ def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
 
                 model.Add(sum(assigned) == required)
 
-    # Helitack: meet per-date, per-role heli demand in data["heli_demand"]
+def demand_heli(model):
     heli_demand = data.get("heli_demand", {})
     heli_dates = data.get("heli_week", date)
     heli_vols = data.get("heli_volunteer", [])
@@ -136,12 +124,10 @@ def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
                 var for (v_key, d_key, r_key), var in x_heli.items()
                 if d_key == d and str(r_key) == str(heli_role)
             ]
-            if required > 0 and len(assigned) == 0:
-                potential = [
-                    v for v in heli_candidates
-                    if availability.get(v, {}).get(d, False) and str(heli_qual.get(v, {}).get("role")) == str(heli_role)
-                ]
+            # ensure heli demand is added to the model
+            model.Add(sum(assigned) == required)
 
+def demand_contr_disp(model):
     # Control: exactly one control per ctrl_week
     for w in data.get("ctrl_week", []):
         assigned_ctrl = [
@@ -150,8 +136,8 @@ def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
             if (v, w) in x_ctrl
         ]
         # If the week expects a control but we have no available control variables, raise diagnostic
-        model.Add(sum(assigned_ctrl) == 1)
-
+        model.Add(sum(assigned_ctrl) == 1)\
+    
     # Dispatch: every week there is one of each dispatch role
     # (except trainee: can be zero or one)
     for d in data.get("disp_week", []):
@@ -162,13 +148,13 @@ def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
                 if (v, d, r) in x_disp
             ]
             # treat 'trainee' role as optional (0 or 1)
-            if str(r) == "trainee":
+            if str(r).lower() == "trainee":
                 model.Add(sum(assigned) <= 1)
             else:
                 model.Add(sum(assigned) == 1)
 
+def no_overlap(model):
     # Ensuring no cross-conflict for ctrl
-    weeks_to_weekends = data.get("weeks_to_weekends", {})
     for v in volunteer:
         if v not in data.get("ctrl_qual", {}):
             continue
@@ -188,6 +174,7 @@ def hard_constraints(model, data, volunteer, x, x_ctrl, x_disp, x_heli):
 
             if vws_assignments:
                 model.Add(sum(vws_assignments) + x_ctrl[v, w] <= 1)
+
 
 '''
     Fairness: Minimise imbalance in total shifts assigned — use max deviation from mean as penalty term
