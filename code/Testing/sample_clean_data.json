@@ -1,0 +1,228 @@
+{
+  "volunteer": [
+    "v1",
+    "v2",
+    "v3",
+    "v4"
+  ],
+  "date": [
+    "2025-11-15",
+    "2025-11-16"
+  ],
+  "base": [
+    "HDB",
+    "SPS"
+  ],
+  "role": [
+    "FF",
+    "CL",
+    "ACL",
+    "helitack"
+  ],
+  "availability": {
+    "v1": {
+      "2025-11-15": true,
+      "2025-11-16": false
+    },
+    "v2": {
+      "2025-11-15": true,
+      "2025-11-16": true
+    },
+    "v3": {
+      "2025-11-15": false,
+      "2025-11-16": true
+    },
+    "v4": {
+      "2025-11-15": true,
+      "2025-11-16": true
+    }
+  },
+  "qual": {
+    "v1": {
+      "role": [
+        "FF"
+      ],
+      "trainee_roles": [],
+      "home_base": "HDB",
+      "dual_bases": [],
+      "preferred_bases": [
+        "HDB"
+      ],
+      "extra_shifts": 1,
+      "extra_shift_role": "FF",
+      "is_helitack": false
+    },
+    "v2": {
+      "role": [
+        "CL"
+      ],
+      "trainee_roles": [],
+      "home_base": "SPS",
+      "dual_bases": [],
+      "preferred_bases": [
+        "SPS"
+      ],
+      "extra_shifts": 0,
+      "extra_shift_role": "CL",
+      "is_helitack": false
+    },
+    "v3": {
+      "role": [
+        "ACL",
+        "FF"
+      ],
+      "trainee_roles": [],
+      "home_base": "HDB",
+      "dual_bases": [
+        "SPS"
+      ],
+      "preferred_bases": [
+        "HDB"
+      ],
+      "extra_shifts": 2,
+      "extra_shift_role": "ACL",
+      "is_helitack": true
+    },
+    "v4": {
+      "role": [
+        "FF"
+      ],
+      "trainee_roles": [],
+      "home_base": "SPS",
+      "dual_bases": [],
+      "preferred_bases": [
+        "SPS"
+      ],
+      "extra_shifts": 0,
+      "extra_shift_role": "FF",
+      "is_helitack": true
+    }
+  },
+  "demand": {
+    "HDB": {
+      "2025-11-15": {
+        "FF": 1,
+        "CL": 0,
+        "ACL": 0,
+        "helitack": 0
+      },
+      "2025-11-16": {
+        "FF": 0,
+        "CL": 1,
+        "ACL": 0,
+        "helitack": 0
+      }
+    },
+    "SPS": {
+      "2025-11-15": {
+        "FF": 0,
+        "CL": 1,
+        "ACL": 0,
+        "helitack": 0
+      },
+      "2025-11-16": {
+        "FF": 1,
+        "CL": 0,
+        "ACL": 0,
+        "helitack": 0
+      }
+    }
+  },
+  "heli_volunteer": [
+    "v3",
+    "v4"
+  ],
+  "heli_week": [
+    "2025-11-15",
+    "2025-11-16"
+  ],
+  "heli_qual": {
+    "v3": {
+      "role": "FF",
+      "station": "HDB"
+    },
+    "v4": {
+      "role": "CL",
+      "station": "SPS"
+    }
+  },
+  "heli_demand": {
+    "2025-11-15": {
+      "FF": 1,
+      "CL": 0,
+      "ACL": 0
+    },
+    "2025-11-16": {
+      "FF": 0,
+      "CL": 1,
+      "ACL": 0
+    }
+  },
+  "ctrl_volunteer": [
+    "v1"
+  ],
+  "ctrl_week": [
+    "2025-11-15"
+  ],
+  "ctrl_availability": {
+    "v1": {
+      "2025-11-15": true
+    }
+  },
+  "ctrl_qual": {
+    "v1": {
+      "role": "Ctrl",
+      "disp_control": true
+    }
+  },
+  "disp_volunteer": [
+    "v2",
+    "v4"
+  ],
+  "disp_week": [
+    "2025-11-15"
+  ],
+  "disp_availability": {
+    "v2": {
+      "2025-11-15": true
+    },
+    "v4": {
+      "2025-11-15": true
+    }
+  },
+  "disp_role": [
+    "mgr",
+    "norm"
+  ],
+  "disp_qual": {
+    "v2": {
+      "role": "Disp",
+      "seniority": "mgr"
+    },
+    "v4": {
+      "role": "Disp",
+      "seniority": "norm"
+    }
+  },
+  "weeks_to_weekends": {
+    "2025-11-15": [
+      "2025-11-15"
+    ]
+  },
+  "pairing_requests": [
+    [
+      "v1",
+      "v3"
+    ]
+  ],
+  "weekend_map": {
+    "2025-11-15": "weekend_01",
+    "2025-11-16": "weekend_01"
+  },
+  "base_schedule": {
+    "weekend_01": [
+      "HDB",
+      "SPS"
+    ]
+  }
+}
