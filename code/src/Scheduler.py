@@ -2,6 +2,7 @@ from ortools.sat.python import cp_model
 import re
 import time
 import random
+import numpy as np
 
 # Maps the short disp_role keys in the JSON to the full names used in disp_demand
 DISP_ROLE_TO_DEMAND_KEY = {
@@ -96,15 +97,10 @@ def build_and_solve(data):
     cpsat_elapsed = cpsat_end - cpsat_start
     solve_elapsed = cpsat_end - solve_start
 
-    if status == cp_model.OPTIMAL:
-        print(f"CP-SAT status: OPTIMAL  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-    elif status == cp_model.FEASIBLE:
-        print(f"CP-SAT status: FEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-    elif status == cp_model.INFEASIBLE:
-        print(f"CP-SAT status: INFEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-        diagnose_infeasibility(data, x, x_heli, x_ctrl, x_disp)
-    else:
-        print(f"CP-SAT status: {solver.StatusName(status)}  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+    print_solver_status(status, solver, cpsat_elapsed, solve_elapsed)
+
+    # Print dispatch assignments (x_disp) grouped by dispatch date/week and role
+    print_dispatch_assignments(solver, x_disp, data)
 
     # extract and print CP-SAT solution stats
     try:
@@ -119,25 +115,8 @@ def build_and_solve(data):
         burnout_vols_initial = _compute_burnout_volunteer_list(
             assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
         )
-
-        print("\n--- CP-SAT solution (before heuristic) ---")
-        print("Shifts per volunteer (initial):")
-        for v in volunteer:
-            print(f"  {v}: {totals.get(v, 0)}")
-
-        if consec:
-            print(f"\nVolunteers with consecutive weekends (initial): {len(set(v for v,_,_ in consec))}")
-            for v, w1, w2 in consec:
-                print(f"  {v}: {w1} & {w2}")
-        else:
-            print("\nNo consecutive weekend assignments (initial).")
-
-        if burnout_vols_initial:
-            print(f"\nVolunteers at risk of burnout (initial): {len(burnout_vols_initial)}")
-            for v, count in burnout_vols_initial:
-                print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
-        else:
-            print("\nNo burnout violations (initial).")
+        print_solution_stats_initial(totals, consec, burnout_vols_initial)
+        print_unpaired_requests(assigned_vws, data)
     except Exception as e:
         print(f"[Warning] Could not print initial stats: {e}")
 
@@ -155,32 +134,8 @@ def build_and_solve(data):
     heuristic_elapsed = heuristic_end - heuristic_start
     total_elapsed = heuristic_end - cpsat_start
 
-    print(f"\n--- Timing summary ---")
-    print(f"  CP-SAT (build + solve): {cpsat_elapsed:.2f}s")
-    print(f"  CP-SAT (solve only):    {solve_elapsed:.2f}s")
-    print(f"  Heuristic (local search): {heuristic_elapsed:.2f}s")
-    print(f"  Total:                  {total_elapsed:.2f}s")
-
-    print("\n--- Heuristic solution (after local search) ---")
-    print("Shifts per volunteer (after heuristic):")
-    for v in volunteer:
-        print(f"  {v}: {improved_totals.get(v, 0)}")
-
-    n_consec_vols = len(set(v for v, _, _ in improved_consec)) if improved_consec else 0
-    if improved_consec:
-        print(f"\nVolunteers working two consecutive weekends (after heuristic): {n_consec_vols}")
-        for v, w1, w2 in improved_consec:
-            print(f"  {v}: {w1} & {w2}")
-    else:
-        print(f"\nVolunteers working two consecutive weekends (after heuristic): 0")
-
-    n_burnout_vols = len(improved_burnout_vols) if improved_burnout_vols else 0
-    if improved_burnout_vols:
-        print(f"\nVolunteers at risk of burnout (after heuristic): {n_burnout_vols}")
-        for v, count in improved_burnout_vols:
-            print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
-    else:
-        print(f"\nVolunteers at risk of burnout (after heuristic): 0")
+    print_timing_summary(cpsat_elapsed, solve_elapsed, heuristic_elapsed, total_elapsed)
+    print_solution_stats_after_heuristic(improved_totals, improved_consec, improved_burnout_vols)
 
     return solver, status, x, x_heli, x_ctrl, x_disp, model
 
@@ -195,7 +150,6 @@ def base_eligibility(v, b, qual):
             "SPS BP": "SPS_BP", "SPS HC": "SPS_HC", "HDB HC/SU": "HDB_HC",
             "STB HC": "STB_HC", "HELITACK STB": "HELITACK_STB",
         }
-        # BUG FIX: was missing 'return s' for names not in sub, causing None returns
         return sub.get(s, s)
 
     PRIMARY_TO_SUBCREWS = {
@@ -266,6 +220,9 @@ def _compatible(var_role, demand_role):
 
 def hard_constraints(model, data, x, x_ctrl, x_disp, x_heli):
     demand_general(model, x)
+    for (v, d, b, r), var in x.items():
+        if not availability.get(v, {}).get(d, False):
+            model.Add(var == 0)
     one_shift_per_weekend(model, x)
     demand_heli(model, data, x_heli)
     demand_contr_disp(model, data, x_ctrl, x_disp)
@@ -372,6 +329,39 @@ def no_overlap(model, data, x, x_ctrl, x_disp):
                 if vws_assignments:
                     model.Add(sum(vws_assignments) + x_disp[v, w, r] <= 1)
 
+    # Ensures no overlap between dispatch roles
+    for v in disp_volunteer:
+        for w in data.get("disp_week", []):
+            mgr = x_disp.get((v, w, "mgr"))
+            norm = x_disp.get((v, w, "norm"))
+            trainee = x_disp.get((v, w, "trainee"))
+
+            # trainee cannot be combined with anything
+            if trainee is not None:
+                if mgr is not None:
+                    model.Add(trainee + mgr <= 1)
+                if norm is not None:
+                    model.Add(trainee + norm <= 1)
+
+            # allow at most two roles total, but the only allowed pair is (mgr + norm)
+            role_vars = [vv for vv in (mgr, norm, trainee) if vv is not None]
+            if role_vars:
+                model.Add(sum(role_vars) <= 2)
+
+            # forbid any other dispatch roles combining with anything
+            for r in disp_role:
+                if r in ("mgr", "norm", "trainee"):
+                    continue
+                other = x_disp.get((v, w, r))
+                if other is None:
+                    continue
+                if mgr is not None:
+                    model.Add(other + mgr <= 1)
+                if norm is not None:
+                    model.Add(other + norm <= 1)
+                if trainee is not None:
+                    model.Add(other + trainee <= 1)
+                model.Add(other <= 0)
 
 def trainee_with_senior(model, x):
     """Ensure at least one senior is assigned whenever a trainee is assigned."""
@@ -422,11 +412,125 @@ def one_shift_per_weekend(model, x):
                 model.Add(sum(assigns) <= 1)
 
 def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli):
+    # Encourage equal shift distribution
     shifts_penalty = distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli)
+
+    # Discourage assigning the same person to both dispatch mgr and norm in the same week
+    disp_overlap_terms = []
+    for v in data.get("disp_volunteer", []):
+        for w in data.get("disp_week", []):
+            mgr = x_disp.get((v, w, "mgr"))
+            norm = x_disp.get((v, w, "norm"))
+            if mgr is None or norm is None:
+                continue
+            both = model.NewBoolVar(f"disp_mgr_norm_same[{v},{w}]")
+            model.Add(both <= mgr)
+            model.Add(both <= norm)
+            model.Add(both >= mgr + norm - 1)
+            disp_overlap_terms.append(both)
+
+    # Encourage assigning trainees: minimize unfilled trainee demand.
+    trainee_unfilled_terms = []
+    disp_demand = data.get("disp_demand", {}) or {}
+    for w in data.get("disp_week", []):
+        required = int(disp_demand.get(w, {}).get(DISP_ROLE_TO_DEMAND_KEY.get("trainee", "trainee")) or 0)
+        if required <= 0:
+            continue
+        assigned = []
+        for v in data.get("disp_volunteer", []):
+            var = x_disp.get((v, w, "trainee"))
+            if var is not None:
+                assigned.append(var)
+        if not assigned:
+            continue
+        unfilled = model.NewIntVar(0, required, f"disp_trainee_unfilled[{w}]")
+        model.Add(unfilled == required - sum(assigned))
+        trainee_unfilled_terms.append(unfilled)
+
+    # Discourage assigning more than 5 total shifts to any volunteer.
+    excess_terms = []
+    try:
+        total_shifts = globals().get('last_total_shifts', {}) or {}
+        for v, tvar in total_shifts.items():
+            excess = model.NewIntVar(0, 10000, f"excess_over_5[{v}]")
+            model.Add(excess >= tvar - 5)
+            model.Add(excess >= 0)
+            excess_terms.append(excess)
+    except Exception:
+        excess_terms = []
 
     objective_terms = []
     if shifts_penalty is not None:
         objective_terms.append(shifts_penalty)
+    if disp_overlap_terms:
+        objective_terms.append(sum(disp_overlap_terms))
+    if trainee_unfilled_terms:
+        objective_terms.append(sum(trainee_unfilled_terms))
+    if excess_terms:
+        objective_terms.append(sum(excess_terms))
+
+    # Pairing requests (very low priority): try to assign requested pairs on the same weekend.
+    # Expected format (if present): data['pair_requests'] = [(v1, v2), ...]
+    # A pair is satisfied if both have >=1 assignment in the same weekend id.
+    pair_penalties = []
+    try:
+        pair_requests = list(data.get('pair_requests', []) or [])
+        if pair_requests:
+            # build weekend groups from weekend_map
+            wm = data.get('weekend_map', {}) or weekend_map or {}
+            weekends = {}
+            for d in data.get('date', []) or date:
+                wid = wm.get(d)
+                if wid:
+                    weekends.setdefault(wid, []).append(d)
+
+            # precompute per-volunteer per-weekend "works" literals
+            works = {}
+            for wid, dates_ in weekends.items():
+                for v in data.get('volunteer', []) or volunteer:
+                    vars_ = [
+                        x.get((v, dd, bb, rr))
+                        for dd in dates_
+                        for bb in (data.get('base', []) or base)
+                        for rr in (data.get('role', []) or role)
+                        if (v, dd, bb, rr) in x
+                    ]
+                    if not vars_:
+                        continue
+                    wv = model.NewBoolVar(f"works[{v},{wid}]")
+                    model.Add(sum(vars_) >= 1).OnlyEnforceIf(wv)
+                    model.Add(sum(vars_) == 0).OnlyEnforceIf(wv.Not())
+                    works[(v, wid)] = wv
+
+            # for each pair: satisfied if there exists wid with works[v1,wid] & works[v2,wid]
+            for i, pair in enumerate(pair_requests):
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    continue
+                v1, v2 = pair
+                both_vars = []
+                for wid in weekends.keys():
+                    a = works.get((v1, wid))
+                    b = works.get((v2, wid))
+                    if a is None or b is None:
+                        continue
+                    both = model.NewBoolVar(f"pair_both[{i},{wid}]")
+                    model.Add(both <= a)
+                    model.Add(both <= b)
+                    model.Add(both >= a + b - 1)
+                    both_vars.append(both)
+
+                if not both_vars:
+                    continue
+                satisfied = model.NewBoolVar(f"pair_satisfied[{i}]")
+                model.AddMaxEquality(satisfied, both_vars)
+                not_satisfied = model.NewBoolVar(f"pair_not_satisfied[{i}]")
+                model.Add(not_satisfied + satisfied == 1)
+                pair_penalties.append(not_satisfied)
+    except Exception:
+        pair_penalties = []
+
+    if pair_penalties:
+        objective_terms.append(sum(pair_penalties))
 
     if objective_terms:
         model.Minimize(sum(objective_terms))
@@ -480,7 +584,7 @@ def _extract_assignments(solver, x, x_ctrl, x_disp, x_heli, data):
     assigned_vws = set()
     for key, var in x.items():
         try:
-            if solver.Value(var):
+            if int(solver.Value(var)) == 1:
                 assigned_vws.add(key)
         except Exception:
             pass
@@ -488,7 +592,7 @@ def _extract_assignments(solver, x, x_ctrl, x_disp, x_heli, data):
     assigned_ctrl = set()
     for key, var in x_ctrl.items():
         try:
-            if solver.Value(var):
+            if int(solver.Value(var)) == 1:
                 assigned_ctrl.add(key)
         except Exception:
             pass
@@ -496,7 +600,7 @@ def _extract_assignments(solver, x, x_ctrl, x_disp, x_heli, data):
     assigned_disp = set()
     for key, var in x_disp.items():
         try:
-            if solver.Value(var):
+            if int(solver.Value(var)) == 1:
                 assigned_disp.add(key)
         except Exception:
             pass
@@ -504,7 +608,7 @@ def _extract_assignments(solver, x, x_ctrl, x_disp, x_heli, data):
     assigned_heli = set()
     for key, var in x_heli.items():
         try:
-            if solver.Value(var):
+            if int(solver.Value(var)) == 1:
                 assigned_heli.add(key)
         except Exception:
             pass
@@ -536,7 +640,6 @@ def _compute_assigned_week_counts(assigned_vws, assigned_ctrl, assigned_disp, as
         for d in dates:
             date_to_wid[d] = wid
 
-    # BUG FIX: include ctrl_week and disp_week in the set of week identifiers
     all_wids = set(w2w.keys())
     all_wids.update(data.get("ctrl_week", []))
     all_wids.update(data.get("disp_week", []))
@@ -601,14 +704,7 @@ def _compute_burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assi
         if days:
             week_to_day[wid] = min(days)
 
-    # NOTE: Do not fabricate proxy days for weeks not present in weeks_to_weekends.
-    # If a ctrl/disp week id is missing from weeks_to_weekends, we can't place it on
-    # a real timeline reliably, so we exclude it from the rolling-window burnout metric.
-
-    # Collect UNIQUE shift-days per volunteer (avoid counting multiple roles on same day).
-    # Burnout cap applies to general VWS shifts only.
-    # Collect UNIQUE VWS shift-days per volunteer.
-    v_dayset = {v: set() for v in volunteer}
+    v_dayset = {}
     for (v, d, b, r) in assigned_vws:
         if d in date_to_day:
             v_dayset.setdefault(v, set()).add(date_to_day[d])
@@ -651,7 +747,7 @@ def _compute_burnout_volunteer_list(assigned_vws, assigned_ctrl, assigned_disp, 
         date_to_day = {d: i for i, d in enumerate(dates)}
 
     # Burnout cap applies to general VWS shifts only.
-    v_dayset = {v: set() for v in volunteer}
+    v_dayset = {}
     for (v, d, b, r) in assigned_vws:
         if d in date_to_day:
             v_dayset.setdefault(v, set()).add(date_to_day[d])
@@ -726,6 +822,12 @@ def validate_solution(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli,
         if not found_senior:
             return False
 
+    # 5) availability: no one assigned on a day they are unavailable (VWS only)
+    av = data.get('availability', {}) or availability
+    for (v, d, b, r) in assigned_vws:
+        if not av.get(v, {}).get(d, False):
+            return False
+
     return True
 
 
@@ -741,7 +843,7 @@ def local_search_swap(solver, x, x_ctrl, x_disp, x_heli, data, max_iters=1000, t
     aw_counts, wids, date_to_wid = _compute_assigned_week_counts(
         assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
     )
-    consec_list = _compute_consec_list(aw_counts, wids)
+    consec_list = _metric_consec_list(aw_counts, wids)
 
     if not assigned_vws:
         burnout_vols = _compute_burnout_volunteer_list(
@@ -753,11 +855,8 @@ def local_search_swap(solver, x, x_ctrl, x_disp, x_heli, data, max_iters=1000, t
         assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
     )
 
-    def current_metric(consec_list, burnout):
-        # lexicographic: fewer consecutive weekends first, then fewer burnout violations
-        return (len(consec_list), burnout)
+    cur_metric = current_metric_soft(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, aw_counts, wids, data)
 
-    cur_metric = current_metric(consec_list, cur_burnout)
     assigned_vws_list = list(assigned_vws)
     start_time = time.time()
 
@@ -816,11 +915,11 @@ def local_search_swap(solver, x, x_ctrl, x_disp, x_heli, data, max_iters=1000, t
             new_aw[(v2, wid2)] = new_aw.get((v2, wid2), 0) - 1
             new_aw[(v1, wid2)] = new_aw.get((v1, wid2), 0) + 1
 
-        new_consec = _compute_consec_list(new_aw, wids)
+        new_consec = _metric_consec_list(new_aw, wids)
         new_burnout = _compute_burnout_violations(
             new_assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
         )
-        new_metric = current_metric(new_consec, new_burnout)
+        new_metric = current_metric_soft(new_assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, new_aw, wids, data)
 
         if new_metric < cur_metric:
             assigned_vws.remove(s1)
@@ -837,3 +936,176 @@ def local_search_swap(solver, x, x_ctrl, x_disp, x_heli, data, max_iters=1000, t
         assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
     )
     return totals, consec_list, burnout_vols
+
+
+def print_solver_status(status, solver, cpsat_elapsed=None, solve_elapsed=None):
+    if cpsat_elapsed is None:
+        cpsat_elapsed = 0.0
+    if solve_elapsed is None:
+        solve_elapsed = 0.0
+    if status == cp_model.OPTIMAL:
+        print(f"CP-SAT status: OPTIMAL  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+    elif status == cp_model.FEASIBLE:
+        print(f"CP-SAT status: FEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+    elif status == cp_model.INFEASIBLE:
+        print(f"CP-SAT status: INFEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+    else:
+        print(f"CP-SAT status: {solver.StatusName(status)}  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+
+
+def print_dispatch_assignments(solver, x_disp, data):
+    """Print dispatch assignments grouped by dispatch date/week and role."""
+    try:
+        disp_dates = list(data.get("disp_week", []))
+        disp_roles = list(data.get("disp_role", []))
+        disp_vols = list(data.get("disp_volunteer", []))
+
+        print("\n--- Dispatch assignments (x_disp) ---")
+        any_assigned = False
+        for w in disp_dates:
+            role_to_vols = {}
+            for r in disp_roles:
+                vols = []
+                for v in disp_vols:
+                    var = x_disp.get((v, w, r))
+                    if var is None:
+                        continue
+                    if int(solver.Value(var)) == 1:
+                        vols.append(v)
+                if vols:
+                    role_to_vols[r] = vols
+
+            if role_to_vols:
+                any_assigned = True
+                print(f"\nDispatch date/week: {w}")
+                for r in disp_roles:
+                    vols = role_to_vols.get(r, [])
+                    if vols:
+                        print(f"  {r}: {', '.join(sorted(map(str, vols)))}")
+
+        if not any_assigned:
+            print("(No dispatch assignments found.)")
+    except Exception as e:
+        print(f"[Warning] Could not print dispatch assignments: {e}")
+
+
+def print_solution_stats_initial(totals, consec, burnout_vols_initial):
+    print("\n--- CP-SAT solution (before heuristic) ---")
+    print("Shifts per volunteer (initial):")
+    for v in volunteer:
+        print(f"  {v}: {totals.get(v, 0)}")
+    print(f"  Mean shifts per volunteer (initial): {np.mean(list(totals.values())):.2f}")
+
+    if consec:
+        print(f"\nVolunteers with consecutive weekends (initial): {len(set(v for v,_,_ in consec))}")
+        for v, w1, w2 in consec:
+            print(f"  {v}: {w1} & {w2}")
+    else:
+        print("\nNo consecutive weekend assignments (initial).")
+
+    if burnout_vols_initial:
+        print(f"\nVolunteers at risk of burnout (initial): {len(burnout_vols_initial)}")
+        for v, count in burnout_vols_initial:
+            print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
+    else:
+        print("\nNo burnout violations (initial).")
+
+
+def print_timing_summary(cpsat_elapsed, solve_elapsed, heuristic_elapsed, total_elapsed):
+    print(f"\n--- Timing summary ---")
+    print(f"  CP-SAT (build + solve): {cpsat_elapsed:.2f}s")
+    print(f"  CP-SAT (solve only):    {solve_elapsed:.2f}s")
+    print(f"  Heuristic (local search): {heuristic_elapsed:.2f}s")
+    print(f"  Total:                  {total_elapsed:.2f}s")
+
+
+def print_solution_stats_after_heuristic(improved_totals, improved_consec, improved_burnout_vols):
+    print("\n--- Heuristic solution (after local search) ---")
+    print("Shifts per volunteer (after heuristic):")
+    for v in volunteer:
+        print(f"  {v}: {improved_totals.get(v, 0)}")
+
+    n_consec_vols = len(set(v for v, _, _ in improved_consec)) if improved_consec else 0
+    if improved_consec:
+        print(f"\nVolunteers working two consecutive weekends (after heuristic): {n_consec_vols}")
+        for v, w1, w2 in improved_consec:
+            print(f"  {v}: {w1} & {w2}")
+    else:
+        print(f"\nVolunteers working two consecutive weekends (after heuristic): 0")
+
+    n_burnout_vols = len(improved_burnout_vols) if improved_burnout_vols else 0
+    if improved_burnout_vols:
+        print(f"\nVolunteers at risk of burnout (after heuristic): {n_burnout_vols}")
+        for v, count in improved_burnout_vols:
+            print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
+    else:
+        print(f"\nVolunteers at risk of burnout (after heuristic): 0")
+
+
+def _metric_consec_list(aw_counts, wids):
+    return _compute_consec_list(aw_counts, wids)
+
+
+def _metric_burnout(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data):
+    return _compute_burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data)
+
+
+def _metric_pairing_violations(assigned_vws, data):
+    """Count how many requested pairs are NOT assigned on the same weekend (VWS only)."""
+    pair_requests = list(data.get('pair_requests', []) or [])
+    if not pair_requests:
+        return 0
+
+    wm = data.get('weekend_map', {}) or {}
+    v_to_wids = {}
+    for (v, d, b, r) in assigned_vws:
+        wid = wm.get(d)
+        if wid is not None:
+            v_to_wids.setdefault(v, set()).add(wid)
+
+    not_sat = 0
+    for pair in pair_requests:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        v1, v2 = pair
+        if not (v_to_wids.get(v1, set()) & v_to_wids.get(v2, set())):
+            not_sat += 1
+    return not_sat
+
+
+def current_metric_soft(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, aw_counts, wids, data):
+    """Lexicographic metric: consecutive weekends, burnout violations, then pairing violations."""
+    consec = _metric_consec_list(aw_counts, wids)
+    burnout = _metric_burnout(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data)
+    pairing = _metric_pairing_violations(assigned_vws, data)
+    return (len(consec), burnout, pairing)
+
+
+def print_unpaired_requests(assigned_vws, data):
+    """Print requested pairs that were not scheduled on the same weekend (VWS only)."""
+    pair_requests = list(data.get('pairing_requests', []) or [])
+    if not pair_requests:
+        return
+
+    wm = data.get('weekend_map', {}) or {}
+    v_to_wids = {}
+    for (v, d, b, r) in assigned_vws:
+        wid = wm.get(d)
+        if wid is not None:
+            v_to_wids.setdefault(v, set()).add(wid)
+
+    missing = []
+    for pair in pair_requests:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        v1, v2 = pair
+        if not (v_to_wids.get(v1, set()) & v_to_wids.get(v2, set())):
+            missing.append((v1, v2))
+
+    if not missing:
+        print("\nAll pairing requests were satisfied.")
+        return
+
+    print(f"\nUnmet pairing requests: {len(missing)}")
+    for v1, v2 in missing:
+        print(f"  {v1} + {v2}")
