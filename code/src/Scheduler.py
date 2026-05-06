@@ -72,16 +72,19 @@ def build_and_solve(data):
         for d in date:
             for b in base:
                 for r in role:
+                    # planning is only valid at NWL_HC1 — block it everywhere else
+                    if str(r) == 'planning' and str(b) != 'NWL_HC1':
+                        continue
                     if (availability.get(v, {}).get(d, False)
                         and base_eligibility(v, b, qual)):
                         x[v, d, b, r] = model.NewBoolVar(f"x[{v},{d},{b},{r}]")
 
-    # helitack variable
+    # helitack variable — only for heli_week dates, NOT all VWS dates
     x_heli = {}
     for v in heli_volunteer:
         v_role = heli_qual.get(v, {}).get("role")
         if v_role:
-            for d in date:
+            for d in heli_week:
                 x_heli[v, d, v_role] = model.NewBoolVar(f"heli[{v},{d},{v_role}]")
 
     # control variable

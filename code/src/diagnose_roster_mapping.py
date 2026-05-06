@@ -906,26 +906,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    # tprint() writes to stderr so it appears on the terminal even when
-    # stdout is redirected to the log file (via > diagnose_log.txt 2>&1
-    # only captures both if 2>&1 is used; the Makefile uses > file 2>&1
-    # so we write terminal lines to stderr to keep them visible).
-    # Actually the Makefile does > file 2>&1 which captures both.
-    # So instead we open /dev/tty directly for guaranteed terminal output.
+    solver_log_path = args.audit_dir.parent / "solver_log.txt"
+    args.audit_dir.parent.mkdir(parents=True, exist_ok=True)
+    logger.setup_logger(solver_log_path)
+
     import os as _os
     try:
         _tty = open(_os.ctermid(), "w")
     except Exception:
-        _tty = sys.stderr  # fallback on systems without a tty
+        _tty = sys.stderr
 
     def tprint(*a, **kw):
         print(*a, **kw, file=_tty, flush=True)
-
-    # Direct all Scheduler/OutputFormatter log_print() output to solver_log.txt.
-    # This must happen before build_and_solve() is imported or called.
-    solver_log_path = args.audit_dir.parent / "solver_log.txt"
-    args.audit_dir.parent.mkdir(parents=True, exist_ok=True)
-    logger.setup_logger(solver_log_path)
 
     try:
         if args.skip_solve:
@@ -972,7 +964,6 @@ def main() -> int:
         solver, status, *_ = solution
         status_name = solver.StatusName(status)
 
-        # Always visible on terminal
         tprint(f"Solution status : {status_name}  ({_solve_elapsed:.1f}s)")
 
         if status not in FEASIBLE_STATUSES:
@@ -1003,19 +994,20 @@ def main() -> int:
         print(f"Saved missing assignments: {missing_path}")
 
         total_found   = sum(1 for r in results if r.get("status") == "FOUND")
-        total_missing = sum(1 for r in results if r.get("status") != "FOUND")
+        total_missing = sum(1 for r in results if r.get("status") == "MISSING")
+        total_skipped = sum(1 for r in results if r.get("status") not in ("FOUND", "MISSING"))
 
-        if any(row.get("status") != "FOUND" for row in results):
+        if total_missing > 0:
             print("\nConclusion: Scheduler produced these raw assignments, but some are missing in the workbook.")
             print("That points to OutputFormatter mapping/layout logic for the missing rows.")
-            tprint(f"Audit result    : {total_found} FOUND, {total_missing} MISSING")
+            tprint(f"Audit result    : {total_found} FOUND, {total_missing} MISSING, {total_skipped} SKIPPED")
             tprint(f"Diagnostic log  : {solver_log_path}")
             tprint(f"Audit log       : {args.audit_dir.parent / 'diagnose_log.txt'}")
             return 1
 
         print("\nConclusion: every raw assignment was found in the workbook.")
         print("That means OutputFormatter mapping is consistent for this run.")
-        tprint(f"Audit result    : {total_found} FOUND, 0 MISSING -- all assignments placed correctly")
+        tprint(f"Audit result    : {total_found} FOUND, 0 MISSING, {total_skipped} SKIPPED -- all assignments placed correctly")
         tprint(f"Diagnostic log  : {solver_log_path}")
         tprint(f"Audit log       : {args.audit_dir.parent / 'diagnose_log.txt'}")
         return 0
