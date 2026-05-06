@@ -26,6 +26,8 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
 from ortools.sat.python import cp_model
 
+from logger import log_print
+
 
 FEASIBLE_STATUSES = {cp_model.OPTIMAL, cp_model.FEASIBLE}
 
@@ -577,13 +579,20 @@ def _build_vws_row_lookup(ws, header_row: int, date_col: int, base_col: int) -> 
     across more than one row. Therefore we carry forward both the current date
     and current base until a new date/base is encountered. This prevents rows
     like the second SPS BP row from being ignored.
+
+    Continuation row fix
+    --------------------
+    A completely blank row (no date, no base label, no nearby content) was
+    previously excluded even when it was an intentional second template row for
+    a base like SPS BP, resulting in "person1; person2" being written into a
+    single cell.  Fix: once inside an active date+base block, include up to
+    MAX_BLANK_CONTINUATION blank rows as continuation rows.
     '''
+    MAX_BLANK_CONTINUATION = 2
+
     lookup: Dict[Tuple[str, str], List[int]] = {}
     current_date: Optional[str] = None
     current_base: Optional[str] = None
-
-    # Stop once we are clearly past the roster body. This avoids accidentally
-    # carrying the final base/date through unrelated notes or blank areas.
     blank_run = 0
 
     for r in range(header_row + 1, ws.max_row + 1):
@@ -599,29 +608,29 @@ def _build_vws_row_lookup(ws, header_row: int, date_col: int, base_col: int) -> 
             current_base = base_key
             blank_run = 0
 
-        # A row is considered part of the roster body if it has a date, a base,
-        # or we are inside an existing date/base block and the row has anything
-        # nearby. This lets us include continuation rows whose Date/Base cells
-        # are visually merged/blank in Excel.
         row_has_anything_nearby = False
         for c in range(1, min(ws.max_column, base_col + 4) + 1):
             if not _is_blank(ws.cell(row=r, column=c).value):
                 row_has_anything_nearby = True
                 break
 
-        if current_date and current_base and (base_key or parsed or row_has_anything_nearby):
-            lookup.setdefault((current_date, current_base), []).append(r)
-            blank_run = 0
+        if current_date and current_base:
+            if base_key or parsed or row_has_anything_nearby:
+                lookup.setdefault((current_date, current_base), []).append(r)
+                blank_run = 0
+            elif blank_run < MAX_BLANK_CONTINUATION:
+                # Blank row inside an active block — include as continuation row
+                lookup.setdefault((current_date, current_base), []).append(r)
+                blank_run += 1
+            else:
+                blank_run += 1
+                if blank_run >= 5:
+                    current_base = None
         else:
             blank_run += 1
-            if blank_run >= 5 and current_date is not None:
-                # likely below the roster table
-                current_base = None
 
-    # Deduplicate while preserving order, just in case a merged/continued row
-    # was encountered more than once.
     for key, row_list in list(lookup.items()):
-        seen = set()
+        seen: set = set()
         lookup[key] = [rr for rr in row_list if not (rr in seen or seen.add(rr))]
 
     return lookup
@@ -1383,18 +1392,18 @@ def _write_rows_into_template(
 
     wb.save(output_path)
 
-    print(f"Populated workbook saved to: {output_path}")
-    print(f"VWS assignments written into '{VWS_SHEET}': {len(rows['vws'])}")
+    log_print(f"Populated workbook saved to: {output_path}")
+    log_print(f"VWS assignments written into '{VWS_SHEET}': {len(rows['vws'])}")
     if rows.get("helitack"):
-        print(f"Helitack assignments written into '{VWS_SHEET}' Helitack STB rows: {len(rows['helitack'])}")
-    print(f"Control assignments processed for '{CONTROL_SHEET}': {len(rows['control'])}")
-    print(f"Dispatch assignments processed for '{DISPATCH_SHEET}': {len(rows['dispatch'])}")
-    print(f"Output workbook contains only: {', '.join(OUTPUT_ROSTER_SHEETS)}")
+        log_print(f"Helitack assignments written into '{VWS_SHEET}' Helitack STB rows: {len(rows['helitack'])}")
+    log_print(f"Control assignments processed for '{CONTROL_SHEET}': {len(rows['control'])}")
+    log_print(f"Dispatch assignments processed for '{DISPATCH_SHEET}': {len(rows['dispatch'])}")
+    log_print(f"Output workbook contains only: {', '.join(OUTPUT_ROSTER_SHEETS)}")
 
     if warnings:
-        print("\nOutput warnings:")
+        log_print("\nOutput warnings:")
         for warning in warnings:
-            print(f"- {warning}")
+            log_print(f"- {warning}")
 
 
 def write_roster(solution, template_excel_file: str, output_excel_file: Optional[str] = None) -> None:

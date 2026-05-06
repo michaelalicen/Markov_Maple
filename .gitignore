@@ -151,3 +151,5 @@ source/
 venv/
 env/
 .venv/
+
+output/

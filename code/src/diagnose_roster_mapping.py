@@ -45,6 +45,8 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from ortools.sat.python import cp_model
 
+import logger
+
 
 FEASIBLE_STATUSES = {cp_model.OPTIMAL, cp_model.FEASIBLE}
 
@@ -904,77 +906,122 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    if args.skip_solve:
-        if args.raw_csv is None:
-            print("ERROR: --skip-solve requires --raw-csv")
-            return 2
-        workbook_path = args.workbook or args.output
-        if not args.raw_csv.exists():
-            print(f"ERROR: raw CSV not found: {args.raw_csv}")
-            return 2
-        if not workbook_path.exists():
-            print(f"ERROR: workbook not found: {workbook_path}")
+    # tprint() writes to stderr so it appears on the terminal even when
+    # stdout is redirected to the log file (via > diagnose_log.txt 2>&1
+    # only captures both if 2>&1 is used; the Makefile uses > file 2>&1
+    # so we write terminal lines to stderr to keep them visible).
+    # Actually the Makefile does > file 2>&1 which captures both.
+    # So instead we open /dev/tty directly for guaranteed terminal output.
+    import os as _os
+    try:
+        _tty = open(_os.ctermid(), "w")
+    except Exception:
+        _tty = sys.stderr  # fallback on systems without a tty
+
+    def tprint(*a, **kw):
+        print(*a, **kw, file=_tty, flush=True)
+
+    # Direct all Scheduler/OutputFormatter log_print() output to solver_log.txt.
+    # This must happen before build_and_solve() is imported or called.
+    solver_log_path = args.audit_dir.parent / "solver_log.txt"
+    args.audit_dir.parent.mkdir(parents=True, exist_ok=True)
+    logger.setup_logger(solver_log_path)
+
+    try:
+        if args.skip_solve:
+            if args.raw_csv is None:
+                print("ERROR: --skip-solve requires --raw-csv")
+                return 2
+            workbook_path = args.workbook or args.output
+            if not args.raw_csv.exists():
+                print(f"ERROR: raw CSV not found: {args.raw_csv}")
+                return 2
+            if not workbook_path.exists():
+                print(f"ERROR: workbook not found: {workbook_path}")
+                return 2
+
+            print(f"Auditing existing workbook: {workbook_path}")
+            print(f"Against raw solution CSV:    {args.raw_csv}")
+
+            raw_rows = load_raw_solution_csv(args.raw_csv)
+            results = audit_workbook(raw_rows, workbook_path)
+            audit_path, missing_path = save_audit_results(results, args.audit_dir)
+            print_summary(results)
+            print(f"\nSaved audit report:       {audit_path}")
+            print(f"Saved missing assignments:{missing_path}")
+            return 0 if all(row.get("status") == "FOUND" for row in results) else 1
+
+        # Full run mode: solve -> export raw -> write workbook -> audit.
+        print(f"Loading data:       {args.data}")
+        print(f"Template workbook:  {args.template}")
+        print(f"Output workbook:    {args.output}")
+        print(f"Audit folder:       {args.audit_dir}")
+        print(f"Solver log:         {solver_log_path}")
+
+        from Scheduler import build_and_solve
+        from OutputFormatter import write_roster
+
+        data = load_data_file(args.data)
+
+        tprint("Solver running (this takes ~100s)...")
+        import time as _time
+        _solve_start = _time.time()
+        solution = build_and_solve(data)
+        _solve_elapsed = _time.time() - _solve_start
+
+        solver, status, *_ = solution
+        status_name = solver.StatusName(status)
+
+        # Always visible on terminal
+        tprint(f"Solution status : {status_name}  ({_solve_elapsed:.1f}s)")
+
+        if status not in FEASIBLE_STATUSES:
+            print("\nNo feasible/optimal solution returned.")
+            print(f"CP-SAT status was: {status_name}")
+            print("No raw solution/workbook audit can be performed.")
+            tprint("No roster written. No audit performed.")
             return 2
 
-        print(f"Auditing existing workbook: {workbook_path}")
-        print(f"Against raw solution CSV:    {args.raw_csv}")
+        print(f"\nCP-SAT returned {status_name}. Extracting raw selected assignments...")
+        status_name, raw_rows = extract_raw_rows_from_solution(solution)
+        raw_csv, raw_json = save_raw_solution(raw_rows, args.audit_dir)
 
-        raw_rows = load_raw_solution_csv(args.raw_csv)
-        results = audit_workbook(raw_rows, workbook_path)
+        print(f"Saved raw solution CSV:  {raw_csv}")
+        print(f"Saved raw solution JSON: {raw_json}")
+
+        tprint("Writing roster to workbook...")
+        print("\nWriting workbook with OutputFormatter...")
+        write_roster(solution, str(args.template), str(args.output))
+        tprint(f"Roster written  : {args.output}")
+
+        print("\nAuditing workbook against raw solution...")
+        results = audit_workbook(raw_rows, args.output)
         audit_path, missing_path = save_audit_results(results, args.audit_dir)
         print_summary(results)
-        print(f"\nSaved audit report:       {audit_path}")
-        print(f"Saved missing assignments:{missing_path}")
-        return 0 if all(row.get("status") == "FOUND" for row in results) else 1
 
-    # Full run mode: solve -> export raw -> write workbook -> audit.
-    print(f"Loading data:       {args.data}")
-    print(f"Template workbook:  {args.template}")
-    print(f"Output workbook:    {args.output}")
-    print(f"Audit folder:       {args.audit_dir}")
+        print(f"\nSaved audit report:        {audit_path}")
+        print(f"Saved missing assignments: {missing_path}")
 
-    from Scheduler import build_and_solve
-    from OutputFormatter import write_roster
+        total_found   = sum(1 for r in results if r.get("status") == "FOUND")
+        total_missing = sum(1 for r in results if r.get("status") != "FOUND")
 
-    data = load_data_file(args.data)
-    solution = build_and_solve(data)
+        if any(row.get("status") != "FOUND" for row in results):
+            print("\nConclusion: Scheduler produced these raw assignments, but some are missing in the workbook.")
+            print("That points to OutputFormatter mapping/layout logic for the missing rows.")
+            tprint(f"Audit result    : {total_found} FOUND, {total_missing} MISSING")
+            tprint(f"Diagnostic log  : {solver_log_path}")
+            tprint(f"Audit log       : {args.audit_dir.parent / 'diagnose_log.txt'}")
+            return 1
 
-    solver, status, *_ = solution
-    status_name = solver.StatusName(status)
+        print("\nConclusion: every raw assignment was found in the workbook.")
+        print("That means OutputFormatter mapping is consistent for this run.")
+        tprint(f"Audit result    : {total_found} FOUND, 0 MISSING -- all assignments placed correctly")
+        tprint(f"Diagnostic log  : {solver_log_path}")
+        tprint(f"Audit log       : {args.audit_dir.parent / 'diagnose_log.txt'}")
+        return 0
 
-    if status not in FEASIBLE_STATUSES:
-        print("\nNo feasible/optimal solution returned.")
-        print(f"CP-SAT status was: {status_name}")
-        print("No raw solution/workbook audit can be performed.")
-        print("This points to Scheduler/model/time-limit issues, not OutputFormatter.")
-        return 2
-
-    print(f"\nCP-SAT returned {status_name}. Extracting raw selected assignments...")
-    status_name, raw_rows = extract_raw_rows_from_solution(solution)
-    raw_csv, raw_json = save_raw_solution(raw_rows, args.audit_dir)
-
-    print(f"Saved raw solution CSV:  {raw_csv}")
-    print(f"Saved raw solution JSON: {raw_json}")
-
-    print("\nWriting workbook with OutputFormatter...")
-    write_roster(solution, str(args.template), str(args.output))
-
-    print("\nAuditing workbook against raw solution...")
-    results = audit_workbook(raw_rows, args.output)
-    audit_path, missing_path = save_audit_results(results, args.audit_dir)
-    print_summary(results)
-
-    print(f"\nSaved audit report:        {audit_path}")
-    print(f"Saved missing assignments: {missing_path}")
-
-    if any(row.get("status") != "FOUND" for row in results):
-        print("\nConclusion: Scheduler produced these raw assignments, but some are missing in the workbook.")
-        print("That points to OutputFormatter mapping/layout logic for the missing rows.")
-        return 1
-
-    print("\nConclusion: every raw assignment was found in the workbook.")
-    print("That means OutputFormatter mapping is consistent for this run.")
-    return 0
+    finally:
+        logger.close_logger()
 
 
 if __name__ == "__main__":

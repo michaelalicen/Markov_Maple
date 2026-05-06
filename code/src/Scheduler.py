@@ -3,6 +3,7 @@ import re
 import time
 import random
 import numpy as np
+from logger import log_print
 
 # Maps the short disp_role keys in the JSON to the full names used in disp_demand
 DISP_ROLE_TO_DEMAND_KEY = {
@@ -53,7 +54,6 @@ def build_and_solve(data):
 
     # If any volunteer has no available dates at all, make them available on every date
     # so they can be used if needed. This runs before any decision variables are created.
-
     forced_available = set()
     for v in volunteer:
         av = availability.get(v, {})
@@ -62,7 +62,7 @@ def build_and_solve(data):
             for d in (date or []):
                 availability[v][d] = True
             forced_available.add(v)
-            print(f"[Info] Volunteer '{v}' had no VWS availability; marked available for all dates.")
+            log_print(f"[Info] Volunteer '{v}' had no VWS availability; marked available for all dates.")
 
     model = cp_model.CpModel()
 
@@ -104,7 +104,7 @@ def build_and_solve(data):
 
     # run solver and time it separately
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 600.0   # stop at 60s with best solution found
+    solver.parameters.max_time_in_seconds = 600.0
     solver.parameters.num_search_workers = 8
 
     solve_start = time.time()
@@ -114,11 +114,9 @@ def build_and_solve(data):
     cpsat_elapsed = cpsat_end - cpsat_start
     solve_elapsed = cpsat_end - solve_start
 
-    print_solver_status(status, solver, cpsat_elapsed, solve_elapsed)
+    _log_solver_status(status, solver, cpsat_elapsed, solve_elapsed)
 
-    # Print dispatch assignments (x_disp) grouped by dispatch date/week and role
-
-    # extract and print CP-SAT solution stats
+    # extract and log CP-SAT solution stats
     try:
         assigned_vws, assigned_ctrl, assigned_disp, assigned_heli = get_solution_variables(
             solver, x, x_ctrl, x_disp, x_heli, data
@@ -128,47 +126,47 @@ def build_and_solve(data):
         # Diagnostic: how many volunteers have zero shifts?
         try:
             zero_vols = [v for v in volunteer if int(totals.get(v, 0)) == 0]
-            print(f"\n[Diag] Volunteers with zero shifts: {len(zero_vols)} / {len(volunteer)}")
+            log_print(f"\n[Diag] Volunteers with zero shifts: {len(zero_vols)} / {len(volunteer)}")
         except Exception:
             pass
 
-        # Print NWL_HC1 planner assignments (VWS role='planning')
+        # Log NWL_HC1 planner assignments (VWS role='planning')
         try:
             planners = [(v, d) for (v, d, b, r) in assigned_vws if str(b) == 'NWL_HC1' and str(r) == 'planning']
             if planners:
-                print("\n--- NWL_HC1 planner assignments ---")
+                log_print("\n--- NWL_HC1 planner assignments ---")
                 by_date = {}
                 for v, d in planners:
                     by_date.setdefault(d, []).append(v)
                 for d in (data.get('date', []) or sorted(by_date.keys())):
                     vols = sorted(by_date.get(d, []))
                     if vols:
-                        print(f"  {d}: {', '.join(vols)}")
+                        log_print(f"  {d}: {', '.join(vols)}")
             else:
-                print("\n--- NWL_HC1 planner assignments ---\n  (none)")
+                log_print("\n--- NWL_HC1 planner assignments ---\n  (none)")
         except Exception:
             pass
 
-        # Print control assignments (by control week)
+        # Log control assignments (by control week)
         try:
             if assigned_ctrl:
-                print("\n--- Control assignments ---")
+                log_print("\n--- Control assignments ---")
                 ctrl_by_week = {}
                 for (v, w) in assigned_ctrl:
                     ctrl_by_week.setdefault(w, []).append(v)
                 for w in (data.get('ctrl_week', []) or sorted(ctrl_by_week.keys())):
                     vols = sorted(ctrl_by_week.get(w, []))
                     if vols:
-                        print(f"  {w}: {', '.join(vols)}")
+                        log_print(f"  {w}: {', '.join(vols)}")
             else:
-                print("\n--- Control assignments ---\n  (none)")
+                log_print("\n--- Control assignments ---\n  (none)")
         except Exception:
             pass
 
-        # Print dispatch assignments (by dispatch week and role)
+        # Log dispatch assignments (by dispatch week and role)
         try:
             if assigned_disp:
-                print("\n--- Dispatch assignments ---")
+                log_print("\n--- Dispatch assignments ---")
                 disp_by_week_role = {}
                 for (v, w, r) in assigned_disp:
                     disp_by_week_role.setdefault((w, r), []).append(v)
@@ -178,11 +176,11 @@ def build_and_solve(data):
                         vols = sorted(disp_by_week_role.get((w, r), []))
                         if vols:
                             if not any_printed:
-                                print(f"  {w}:")
+                                log_print(f"  {w}:")
                                 any_printed = True
-                            print(f"    {r}: {', '.join(vols)}")
+                            log_print(f"    {r}: {', '.join(vols)}")
             else:
-                print("\n--- Dispatch assignments ---\n  (none)")
+                log_print("\n--- Dispatch assignments ---\n  (none)")
         except Exception:
             pass
 
@@ -193,10 +191,10 @@ def build_and_solve(data):
         burnout_vols_initial = burnout_cap(
             assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data
         )
-        print_solution_stats_initial(totals, consec, burnout_vols_initial)
-        print_unpaired_requests(assigned_vws, data)
+        _log_solution_stats(totals, consec, burnout_vols_initial)
+        _log_unpaired_requests(assigned_vws, data)
     except Exception as e:
-        print(f"[Warning] Could not print initial stats: {e}")
+        log_print(f"[Warning] Could not log initial stats: {e}")
 
     return solver, status, x, x_heli, x_ctrl, x_disp, model
 
@@ -221,7 +219,6 @@ def base_eligibility(v, b, qual):
     }
 
     def _expand_entry(e):
-        """Yield individual base strings from an entry, splitting on '/'."""
         if e is None:
             return
         parts = str(e).split("/")
@@ -231,8 +228,6 @@ def base_eligibility(v, b, qual):
                 yield p
 
     v_qual = qual.get(v, {}) if isinstance(qual, dict) else {}
-
-    # Only primary base is eligible
     primary = v_qual.get("home_base")
 
     entries = []
@@ -257,21 +252,13 @@ def base_eligibility(v, b, qual):
     return target in allowed
 
 
-# helper to check if a helitack role variable is compatible with a demanded heli role
 def _compatible(var_role, demand_role):
-    """Return True if var_role can satisfy demand_role.
-
-    Compatibility rules:
-    - exact match
-    - FF2YR can satisfy FF demand (fallback)
-    """
     if var_role is None or demand_role is None:
         return False
     vr = str(var_role)
     dr = str(demand_role)
     if vr == dr:
         return True
-    # allow FF2YR to cover FF demand
     if dr == "FF" and vr == "FF2YR":
         return True
     return False
@@ -290,45 +277,17 @@ def hard_constraints(model, data, x, x_ctrl, x_disp, x_heli):
     trainee_with_senior(model, x)
     require_planning_on_nwl_hc1(model, data, x)
     restrict_extra_shift_roles(model, data, x)
-    #one_shift_per_volunteer(model, data, x, x_ctrl, x_disp, x_heli)
 
 
 def restrict_extra_shift_roles(model, data, x):
-    """Enforce that a volunteer can only be assigned a shift beyond their first 5 in
-    roles they have approved via extra_shift_role.
-
-    For volunteers with extra_shifts == 0: any shift beyond 5 in ANY role is blocked
-    (we achieve this via the excess penalty; the role restriction is only relevant for
-    volunteers who do want extras).
-
-    For volunteers with extra_shifts > 0: shifts 6+ must be in an approved role.
-    We implement this by:
-      1. Computing the total VWS shifts for the volunteer.
-      2. For each variable x[v,d,b,r] where r is NOT in the volunteer's approved
-         extra-shift roles, we add: x[v,d,b,r] + (total_shifts_in_non_approved_roles) <= 5
-         But that's complex — instead we use a cleaner formulation:
-         If a volunteer's approved extra roles are a subset of all roles, we forbid any
-         non-approved role from being assigned to them if they already have 5 shifts.
-         Since CP-SAT needs linear constraints, we track non-approved role assignments
-         and cap total assignments beyond 5 to approved roles only.
-
-    Concretely: for each volunteer v with extra_shifts > 0,
-      let S_approved   = sum of x[v,d,b,r] for r in approved_roles
-      let S_unapproved = sum of x[v,d,b,r] for r not in approved_roles
-      Constraint: S_unapproved <= 5
-      (The first 5 can be in any role; beyond 5, only approved roles are allowed,
-       which is equivalent to capping unapproved-role assignments at 5.)
-    """
     qual_local = data.get("qual", {}) or {}
-    all_roles = list(role)  # global `role` list
+    all_roles = list(role)
 
     for v in volunteer:
         v_qual = qual_local.get(v, {}) or {}
         extra_shifts = int(v_qual.get("extra_shifts", 0) or 0)
 
         if extra_shifts == 0:
-            # No extra shifts wanted; the excess penalty handles deterrence.
-            # No additional hard role constraint needed.
             continue
 
         approved_roles = _parse_extra_shift_roles(
@@ -336,10 +295,8 @@ def restrict_extra_shift_roles(model, data, x):
         )
 
         if not approved_roles:
-            # Volunteer asked for extras but no parseable role specified — skip.
             continue
 
-        # Build the list of (v,d,b,r) variables where r is NOT in approved_roles
         unapproved_vars = [
             x[v, d, b, r]
             for d in date
@@ -351,26 +308,17 @@ def restrict_extra_shift_roles(model, data, x):
         if not unapproved_vars:
             continue
 
-        # Cap total unapproved-role assignments at 5
         model.Add(sum(unapproved_vars) <= 5)
 
 
 def require_planning_on_nwl_hc1(model, data, x):
-    """For every NWL_HC1 date that has planning demand, enforce:
-      - exactly 1 qualified planner (role includes 'planning')
-      - at most 1 trainee planner (trainee_roles includes 'planning'), optional
-
-    Planning demand in the demand dict is ignored by demand_general and handled
-    exclusively here, so this function is the single source of truth for planning.
-    """
     demand_local = data.get('demand', {}) or {}
     nwl_hc1_demand = demand_local.get('NWL_HC1', {}) or {}
 
     for d, role_dict in nwl_hc1_demand.items():
         if not (role_dict or {}).get('planning'):
-            continue  # no planning demand on this date
+            continue
 
-        # Qualified planners: planning is in their confirmed role list
         senior_vars = [
             x[v, d, 'NWL_HC1', 'planning']
             for v in volunteer
@@ -378,7 +326,6 @@ def require_planning_on_nwl_hc1(model, data, x):
             and 'planning' in [str(r) for r in (qual.get(v, {}).get('role') or [])]
         ]
 
-        # Trainee planners: planning is in their trainee_roles list (but not their main role)
         trainee_vars = [
             x[v, d, 'NWL_HC1', 'planning']
             for v in volunteer
@@ -387,23 +334,17 @@ def require_planning_on_nwl_hc1(model, data, x):
             and 'planning' not in [str(r) for r in (qual.get(v, {}).get('role') or [])]
         ]
 
-        # Require exactly 1 senior planner
         if senior_vars:
             model.Add(sum(senior_vars) == 1)
         else:
-            # No eligible senior planner available — skip to avoid infeasibility
-            print(f"[Warning] No eligible senior planner for NWL_HC1 on {d}; planning constraint skipped.")
+            log_print(f"[Warning] No eligible senior planner for NWL_HC1 on {d}; planning constraint skipped.")
             continue
 
-        # Allow at most 1 trainee planner (optional slot)
         if trainee_vars:
             model.Add(sum(trainee_vars) <= 1)
 
 
-# Roles where demand is a cap rather than a hard requirement (use <=).
 SOFT_DEMAND_ROLES = {'recruit_FF', 'trainee_ACL'}
-
-# Roles excluded from demand_general — handled by dedicated constraints.
 DEMAND_GENERAL_EXCLUDED_ROLES = {'planning'}
 
 def demand_general(model, x):
@@ -411,7 +352,7 @@ def demand_general(model, x):
         for b in base:
             for r in role:
                 if str(r) in DEMAND_GENERAL_EXCLUDED_ROLES:
-                    continue  # planning is managed by require_planning_on_nwl_hc1
+                    continue
                 required = int(demand.get(b, {}).get(d, {}).get(r) or 0)
                 assigned = [
                     x[v, d, b, r]
@@ -419,7 +360,6 @@ def demand_general(model, x):
                     if (v, d, b, r) in x
                 ]
                 if str(r) in SOFT_DEMAND_ROLES:
-                    # Trainee/recruit slots: fill as many as available, up to demand
                     model.Add(sum(assigned) <= required)
                 else:
                     model.Add(sum(assigned) == required)
@@ -435,7 +375,6 @@ def demand_heli(model, data, x_heli):
             required = int(required or 0)
             if required == 0:
                 continue
-
             assigned = [
                 var for (v_key, d_key, r_key), var in x_heli.items()
                 if d_key == d and _compatible(r_key, heli_role)
@@ -444,7 +383,6 @@ def demand_heli(model, data, x_heli):
 
 
 def demand_contr_disp(model, data, x_ctrl, x_disp):
-    """Control and dispatch demand constraints."""
     ctrl_demand = data.get("ctrl_demand", {})
 
     for w in data.get("ctrl_week", []):
@@ -474,7 +412,6 @@ def demand_contr_disp(model, data, x_ctrl, x_disp):
 
 
 def no_overlap(model, data, x, x_ctrl, x_disp):
-    # ctrl overlap
     for v in ctrl_volunteer:
         if v not in data.get("ctrl_qual", {}):
             continue
@@ -492,7 +429,6 @@ def no_overlap(model, data, x, x_ctrl, x_disp):
             if vws_assignments:
                 model.Add(sum(vws_assignments) + x_ctrl[v, w] <= 1)
 
-    # dispatch overlap (dispatch is indexed by disp_week ids, same universe as weeks_to_weekends keys)
     for v in disp_volunteer:
         if v not in data.get("disp_qual", {}):
             continue
@@ -511,11 +447,8 @@ def no_overlap(model, data, x, x_ctrl, x_disp):
                 if vws_assignments:
                     model.Add(sum(vws_assignments) + x_disp[v, w, r] <= 1)
 
-    # No overlap between dispatch and control unless volunteer allows it (ctrl_qual.disp_control == True)
     ctrl_qual_local = data.get("ctrl_qual", {}) or {}
 
-    # Build mapping: control week id -> set of overlapping dispatch week ids (i.e., weekend ids)
-    # Control weeks are keys in weeks_to_weekends; weekend_map maps each weekend date -> weekend_id.
     ctrl_week_to_disp_weeks = {}
     for w_ctrl in data.get("ctrl_week", []) or []:
         disp_wids = set()
@@ -549,26 +482,22 @@ def no_overlap(model, data, x, x_ctrl, x_disp):
             if disp_terms:
                 model.Add(sum(disp_terms) + x_ctrl[v, w_ctrl] <= 1)
 
-    # Ensures no overlap between dispatch roles
     for v in disp_volunteer:
         for w in data.get("disp_week", []):
             mgr = x_disp.get((v, w, "mgr"))
             norm = x_disp.get((v, w, "norm"))
             trainee = x_disp.get((v, w, "trainee"))
 
-            # trainee cannot be combined with anything
             if trainee is not None:
                 if mgr is not None:
                     model.Add(trainee + mgr <= 1)
                 if norm is not None:
                     model.Add(trainee + norm <= 1)
 
-            # allow at most two roles total, but the only allowed pair is (mgr + norm)
             role_vars = [vv for vv in (mgr, norm, trainee) if vv is not None]
             if role_vars:
                 model.Add(sum(role_vars) <= 2)
 
-            # forbid any other dispatch roles combining with anything
             for r in disp_role:
                 if r in ("mgr", "norm", "trainee"):
                     continue
@@ -585,7 +514,6 @@ def no_overlap(model, data, x, x_ctrl, x_disp):
 
 
 def trainee_with_senior(model, x):
-    """Ensure at least one senior is assigned whenever a trainee is assigned."""
     for (v, d, b, r), v_var in list(x.items()):
         trainee_roles = qual.get(v, {}).get('trainee_roles', []) or []
         trainee_roles = [str(tr) for tr in trainee_roles]
@@ -632,16 +560,8 @@ def one_shift_per_weekend(model, x):
             if assigns:
                 model.Add(sum(assigns) <= 1)
 
-def _parse_extra_shift_roles(extra_shift_role_str, all_roles):
-    """Parse the free-text extra_shift_role field into a set of role keys.
 
-    Recognised tokens (case-insensitive):
-      'FF'      -> {'FF'}
-      'driver'  -> {'crew_driver', 'skid_driver'}
-      'planning'-> {'planning'}
-    Tokens are split on commas and the word 'or'.
-    Returns a frozenset of role strings from all_roles.
-    """
+def _parse_extra_shift_roles(extra_shift_role_str, all_roles):
     if not extra_shift_role_str:
         return frozenset()
 
@@ -662,8 +582,8 @@ def _parse_extra_shift_roles(extra_shift_role_str, all_roles):
         if tok in TOKEN_MAP:
             result.update(TOKEN_MAP[tok])
 
-    # Only return roles that exist in the model's role list
     return frozenset(r for r in result if r in all_roles)
+
 
 def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=None):
     if forced_available is None:
@@ -671,9 +591,7 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
 
     shifts_penalty, total_shifts_map = distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli)
     pair_penalties = pair_volunteers(model, data, x)
-    avg_diff_terms = []
 
-    # Penalise volunteers who receive zero shifts.
     zero_shift_terms = []
     try:
         for v, tvar in total_shifts_map.items():
@@ -684,7 +602,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     except Exception:
         zero_shift_terms = []
 
-    # Burnout rolling-window penalty (VWS only)
     burnout_terms = []
     try:
         window_days = int(data.get('burnout_window_days', 62) or 62)
@@ -712,7 +629,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
         ordered_dates = sorted(dates, key=lambda dd: date_to_day.get(dd, 0))
         n = len(ordered_dates)
 
-        # Build windows for each start date
         windows = []
         for i in range(n):
             start_day = date_to_day.get(ordered_dates[i], i)
@@ -745,7 +661,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     except Exception:
         burnout_terms = []
 
-    # Discourage assigning the same person to both dispatch mgr and norm in the same week
     disp_overlap_terms = []
     for v in data.get("disp_volunteer", []):
         for w in data.get("disp_week", []):
@@ -759,7 +674,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
             model.Add(both >= mgr + norm - 1)
             disp_overlap_terms.append(both)
 
-    # Encourage assigning trainees: minimize unfilled trainee demand.
     trainee_unfilled_terms = []
     disp_demand = data.get("disp_demand", {}) or {}
     for w in data.get("disp_week", []):
@@ -777,7 +691,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
         model.Add(unfilled == required - sum(assigned))
         trainee_unfilled_terms.append(unfilled)
 
-    # Control/dispatch excess caps
     ctrl_excess_terms = []
     try:
         for v in data.get("ctrl_volunteer", []):
@@ -817,7 +730,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     except Exception:
         disp_excess_terms = []
 
-    # Excess total shifts (variable cap uses qual[v].extra_shifts)
     excess_terms = []
     try:
         qual_local = data.get("qual", {}) or {}
@@ -845,7 +757,6 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     if trainee_unfilled_terms:
         weighted_terms.append((sum(trainee_unfilled_terms), 1))
     if burnout_terms:
-        # moderate weight; tune via data['burnout_weight']
         burnout_weight = int(data.get('burnout_weight', 10) or 10)
         weighted_terms.append((sum(burnout_terms), burnout_weight))
     if excess_terms:
@@ -866,14 +777,10 @@ def distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli):
     num_weekends = len(set(weekend_map.values())) if weekend_map else (len(date) if date else 0)
     max_vws = num_weekends
     max_ctrl = len(ctrl_week) if ctrl_week else 0
-    # count dispatch at most once per week per volunteer
     max_disp = len(disp_week) if disp_week else 0
     max_heli = len(heli_week) if heli_week else 0
-    max_possible = max_vws + max_ctrl + max_disp + max_heli
-    # Safety floor so the bound is never 0
-    max_possible = max(max_possible, 1)
+    max_possible = max(max_vws + max_ctrl + max_disp + max_heli, 1)
 
-    # Build per-(volunteer,disp_week) boolean that is 1 iff the volunteer has any dispatch role that week
     disp_any = {}
     try:
         for v in volunteer:
@@ -888,7 +795,6 @@ def distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli):
     except Exception:
         disp_any = {}
 
-    # Build volunteer-indexed lookups to avoid O(V*N) scans
     vws_by_vol = {}
     for (vv, dd, bb, rr), var in x.items():
         vws_by_vol.setdefault(vv, []).append(var)
@@ -905,13 +811,9 @@ def distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli):
     total_shifts = {}
     for v in volunteer:
         terms = []
-        # VWS shifts
         terms.extend(vws_by_vol.get(v, []))
-        # control shifts (one per ctrl week variable)
         terms.extend(ctrl_by_vol.get(v, []))
-        # dispatch: count at most one per week via disp_any
         terms.extend(disp_any_by_vol.get(v, []))
-        # helitack shifts
         terms.extend(heli_by_vol.get(v, []))
 
         total_shifts[v] = model.NewIntVar(0, max_possible, f"total_shifts[{v}]")
@@ -932,14 +834,13 @@ def distribute_shifts_equally(model, x, x_ctrl, x_disp, x_heli):
     global last_total_shifts
     last_total_shifts = total_shifts
 
-    return range_shifts, total_shifts       
+    return range_shifts, total_shifts
+
 
 def pair_volunteers(model, data, x):
-    # Pairing penalties: prefer requested pairs to work on the same day at the same base.
     pair_penalties = []
     pair_requests = list((data.get('pairing_requests', []) or []))
 
-    # Build presence booleans for each (volunteer, date, base)
     v_db_present = {}
     for v in volunteer:
         for d in date:
@@ -951,7 +852,7 @@ def pair_volunteers(model, data, x):
                 model.Add(sum(vars_v) >= bv)
                 model.Add(sum(vars_v) <= len(vars_v) * bv)
                 v_db_present[(v, d, b)] = bv
-    # For each requested pair, create a paired boolean if they share any (date,base)
+
     for pair in pair_requests:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             continue
@@ -968,13 +869,12 @@ def pair_volunteers(model, data, x):
                     model.Add(both >= v_db_present[k1] + v_db_present[k2] - 1)
                     both_vars.append(both)
         if not both_vars:
-            # if no possible overlapping (date,base) exists, skip penalty
             continue
         paired = model.NewBoolVar(f"paired[{v1},{v2}]")
         model.Add(paired <= sum(both_vars))
         for bv in both_vars:
             model.Add(paired >= bv)
-        
+
         unpaired = model.NewIntVar(0, 1, f"pair_unpaired[{v1},{v2}]")
         model.Add(paired + unpaired == 1)
         pair_penalties.append(unpaired)
@@ -1057,7 +957,6 @@ def _compute_assigned_week_counts(assigned_vws, assigned_ctrl, assigned_disp, as
         wid = date_to_wid.get(d)
         if wid is not None and (v, wid) in aw_counts:
             aw_counts[(v, wid)] += 1
-    # ctrl/disp use their week id directly
     for (v, w) in assigned_ctrl:
         if (v, w) in aw_counts:
             aw_counts[(v, w)] += 1
@@ -1078,7 +977,6 @@ def consecutive_weekends(aw_counts, wids):
 
 
 def burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data, window_days=62):
-    # Build mapping from date string to an integer day index.
     dates = list(data.get('date', []))
     date_to_day = {}
     parsed = True
@@ -1098,7 +996,6 @@ def burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli
     if not parsed:
         date_to_day = {d: i for i, d in enumerate(dates)}
 
-    # Map week ids (ctrl/disp) to an approximate day (earliest date in that week).
     w2w = data.get('weeks_to_weekends', {}) or {}
     week_to_day = {}
     for wid, ds in w2w.items():
@@ -1111,7 +1008,6 @@ def burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli
         if d in date_to_day:
             v_dayset.setdefault(v, set()).add(date_to_day[d])
 
-    # Compute max overload in any rolling window without double-counting.
     total_violation = 0
     for v, dayset in v_dayset.items():
         if not dayset:
@@ -1123,7 +1019,6 @@ def burnout_violations(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli
                 i += 1
             count = j - i + 1
             if count > 3:
-                # count only the amount above cap at this window end
                 total_violation += (count - 3)
     return total_violation
 
@@ -1148,7 +1043,6 @@ def burnout_cap(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data,
     if not parsed:
         date_to_day = {d: i for i, d in enumerate(dates)}
 
-    # Burnout cap applies to general VWS shifts only.
     v_dayset = {}
     for (v, d, b, r) in assigned_vws:
         if d in date_to_day:
@@ -1172,59 +1066,51 @@ def burnout_cap(assigned_vws, assigned_ctrl, assigned_disp, assigned_heli, data,
 
     return sorted(burnout_vols, key=lambda x: -x[1])
 
-def print_solver_status(status, solver, cpsat_elapsed=None, solve_elapsed=None):
-    if cpsat_elapsed is None:
-        cpsat_elapsed = 0.0
-    if solve_elapsed is None:
-        solve_elapsed = 0.0
-    if status == cp_model.OPTIMAL:
-        print(f"CP-SAT status: OPTIMAL  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-    elif status == cp_model.FEASIBLE:
-        print(f"CP-SAT status: FEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-    elif status == cp_model.INFEASIBLE:
-        print(f"CP-SAT status: INFEASIBLE  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
-    else:
-        print(f"CP-SAT status: {solver.StatusName(status)}  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
 
-def print_solution_stats_initial(totals, consec, burnout_vols_initial):
-    print("\n--- CP-SAT solution (before heuristic) ---")
-    print("Shifts per volunteer (initial):")
+# ---------------------------------------------------------------------------
+# Internal log helpers (all go to file via log_print, never to terminal)
+# ---------------------------------------------------------------------------
+
+def _log_solver_status(status, solver, cpsat_elapsed=None, solve_elapsed=None):
+    cpsat_elapsed = cpsat_elapsed or 0.0
+    solve_elapsed = solve_elapsed or 0.0
+    name = solver.StatusName(status)
+    log_print(f"CP-SAT status: {name}  (build+solve: {cpsat_elapsed:.2f}s | solve only: {solve_elapsed:.2f}s)")
+
+
+def _log_solution_stats(totals, consec, burnout_vols_initial):
+    log_print("\n--- CP-SAT solution ---")
+    log_print("Shifts per volunteer:")
     for v in volunteer:
-        print(f"  {v}: {totals.get(v, 0)}")
-    print(f"  Mean shifts per volunteer (initial): {np.mean(list(totals.values())):.2f}")
+        log_print(f"  {v}: {totals.get(v, 0)}")
+    log_print(f"  Mean shifts per volunteer: {np.mean(list(totals.values())):.2f}")
 
-    # Print control and dispatch volunteer counts
     try:
-        print("\nControl shifts per control volunteer (initial):")
+        log_print("\nControl shifts per control volunteer:")
         for v in ctrl_volunteer:
-            print(f"  {v}: {totals.get(v, 0)}")
-        print("\nDispatch shifts per dispatch volunteer (initial):")
+            log_print(f"  {v}: {totals.get(v, 0)}")
+        log_print("\nDispatch shifts per dispatch volunteer:")
         for v in disp_volunteer:
-            print(f"  {v}: {totals.get(v, 0)}")
+            log_print(f"  {v}: {totals.get(v, 0)}")
     except Exception:
         pass
 
     if consec:
-        print(f"\nVolunteers with consecutive weekends (initial): {len(set(v for v,_,_ in consec))}")
+        log_print(f"\nVolunteers with consecutive weekends: {len(set(v for v,_,_ in consec))}")
         for v, w1, w2 in consec:
-            print(f"  {v}: {w1} & {w2}")
+            log_print(f"  {v}: {w1} & {w2}")
     else:
-        print("\nNo consecutive weekend assignments (initial).")
+        log_print("\nNo consecutive weekend assignments.")
 
     if burnout_vols_initial:
-        print(f"\nVolunteers at risk of burnout (initial): {len(burnout_vols_initial)}")
+        log_print(f"\nVolunteers at risk of burnout: {len(burnout_vols_initial)}")
         for v, count in burnout_vols_initial:
-            print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
+            log_print(f"  {v}: {count} shifts in a 2-month window (cap=3)")
     else:
-        print("\nNo burnout violations (initial).")
+        log_print("\nNo burnout violations.")
 
-def print_timing_summary(cpsat_elapsed, solve_elapsed, heuristic_elapsed, total_elapsed):
-    print(f"\n--- Timing summary ---")
-    print(f"  CP-SAT (build + solve): {cpsat_elapsed:.2f}s")
-    print(f"  CP-SAT (solve only):    {solve_elapsed:.2f}s")
 
-def print_unpaired_requests(assigned_vws, data):
-    """Print requested pairs that were not scheduled on the same weekend (VWS only)."""
+def _log_unpaired_requests(assigned_vws, data):
     pair_requests = list(data.get('pairing_requests', []) or [])
     if not pair_requests:
         return
@@ -1245,9 +1131,9 @@ def print_unpaired_requests(assigned_vws, data):
             missing.append((v1, v2))
 
     if not missing:
-        print("\nAll pairing requests were satisfied.")
+        log_print("\nAll pairing requests were satisfied.")
         return
 
-    print(f"\nUnmet pairing requests: {len(missing)}")
+    log_print(f"\nUnmet pairing requests: {len(missing)}")
     for v1, v2 in missing:
-        print(f"  {v1} + {v2}")
+        log_print(f"  {v1} + {v2}")
