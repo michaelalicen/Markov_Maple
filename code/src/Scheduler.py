@@ -72,14 +72,14 @@ def build_and_solve(data):
         for d in date:
             for b in base:
                 for r in role:
-                    # planning is only valid at NWL_HC1 — block it everywhere else
+                    # planning is only valid at NWL_HC1 -- block it everywhere else
                     if str(r) == 'planning' and str(b) != 'NWL_HC1':
                         continue
                     if (availability.get(v, {}).get(d, False)
                         and base_eligibility(v, b, qual)):
                         x[v, d, b, r] = model.NewBoolVar(f"x[{v},{d},{b},{r}]")
 
-    # helitack variable — only for heli_week dates, NOT all VWS dates
+    # helitack variable -- only for heli_week dates, NOT all VWS dates
     x_heli = {}
     for v in heli_volunteer:
         v_role = heli_qual.get(v, {}).get("role")
@@ -107,7 +107,7 @@ def build_and_solve(data):
 
     # run solver and time it separately
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 600.0
+    solver.parameters.max_time_in_seconds = 800.0
     solver.parameters.num_search_workers = 8
 
     solve_start = time.time()
@@ -758,7 +758,7 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     if disp_overlap_terms:
         weighted_terms.append((sum(disp_overlap_terms), 1000))
     if trainee_unfilled_terms:
-        weighted_terms.append((sum(trainee_unfilled_terms), 1))
+        weighted_terms.append((sum(trainee_unfilled_terms), 10))
     if burnout_terms:
         burnout_weight = int(data.get('burnout_weight', 10) or 10)
         weighted_terms.append((sum(burnout_terms), burnout_weight))
