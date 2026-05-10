@@ -1,20 +1,38 @@
 '''
 Take the final CP-SAT solution and populate the existing SU/VWS workbook.
 
-This version writes into the actual roster template/grid instead of replacing
-it with a flat table. It also avoids appending fallback rows below the Control
-and Dispatch templates.
+Writes directly into the existing roster template grids rather than replacing
+them with flat tables, and never appends fallback rows below the templates.
 
-It populates:
-    - VWS Roster: by matching Date + Base row, then filling the correct role slot
-    - Control Roster: by matching Week/Date row, then filling control role slots
-    - Dispatch Roster: by matching Week/Date row, then filling dispatch role slots
+Populates:
+    - VWS Roster   : matches Date + Base row, fills the correct role column.
+                     Continuation rows within a base/date block are used before
+                     overflow is appended into a single cell.
+    - Control Roster : matches week rows (including formula-driven rows) using
+                       the anchor date of the first parseable week and inferring
+                       subsequent weeks at +7 day intervals.
+    - Dispatch Roster: same weekly-inference logic; writes Dispatch Manager,
+                       Dispatcher and Trainee Dispatcher columns separately.
 
-It preserves the workbook layout as far as possible and only clears/writes the
-assignment cells, not the date/base/heading structure.
+Helitack assignments are merged into the VWS Roster as "Helitack STB" rows.
+
+Only VWS Roster, Control Roster and Dispatch Roster sheets are kept in the
+saved output workbook; all source/supporting sheets are stripped.
 '''
 
 from __future__ import annotations
+
+from datetime import timedelta as _timedelta
+
+
+def _cell_has_formula(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().startswith("=")
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
 
 from datetime import date as DateType, datetime
 from pathlib import Path
@@ -749,490 +767,6 @@ def _parsed_date_rows(ws, header_row: int, date_or_week_col: int) -> List[Tuple[
     return out
 
 
-def _last_used_row_in_columns(ws, columns: Iterable[int]) -> int:
-    """Find the last row that has content in the given columns."""
-    cols = sorted({int(c) for c in columns if c})
-    if not cols:
-        return ws.max_row
-
-    last = 1
-    for r in range(1, ws.max_row + 1):
-        for c in cols:
-            value = ws.cell(row=r, column=c).value
-            if value is not None and str(value).strip() != "":
-                last = max(last, r)
-                break
-    return last
-
-
-def _get_or_create_week_row(
-    ws,
-    week_key: str,
-    date_or_week_col: int,
-    role_columns: Dict[str, List[int]],
-    used_created_rows: Dict[str, int],
-) -> int:
-    """Create/use a row in the roster sheet when the template has no matching date row.
-
-    This keeps the solution inside the correct Control/Dispatch/Helitack sheet rather
-    than silently losing assignments or writing only a far-right fallback table.
-    """
-    if week_key in used_created_rows:
-        return used_created_rows[week_key]
-
-    all_role_cols = sorted({c for cols in role_columns.values() for c in cols})
-    relevant_cols = [date_or_week_col] + all_role_cols
-    new_row = _last_used_row_in_columns(ws, relevant_cols) + 1
-
-    ws.cell(row=new_row, column=date_or_week_col).value = week_key
-    used_created_rows[week_key] = new_row
-    return new_row
-
-
-def _candidate_week_rows(
-    ws,
-    week_key: str,
-    row_lookup: Dict[str, List[int]],
-    parsed_rows: List[Tuple[str, int]],
-    date_or_week_col: int,
-    role_columns: Dict[str, List[int]],
-    used_created_rows: Dict[str, int],
-) -> List[int]:
-    """Find a row for a control/dispatch/helitack assignment.
-
-    First tries exact matching. If the workbook uses a related date in the same
-    week, for example a Friday/Saturday while the JSON has a Wednesday window
-    start, it uses the closest row within 6 days. If the template does not have
-    any matching row, it creates a new row in the same roster sheet.
-    """
-    exact = row_lookup.get(week_key, [])
-    if exact:
-        return exact
-
-    best: List[Tuple[int, int]] = []
-    for parsed, row_idx in parsed_rows:
-        gap = _days_between(parsed, week_key)
-        if gap is not None and gap <= 6:
-            best.append((gap, row_idx))
-
-    if best:
-        best.sort(key=lambda x: (x[0], x[1]))
-        min_gap = best[0][0]
-        return [row_idx for gap, row_idx in best if gap == min_gap]
-
-    return [_get_or_create_week_row(ws, week_key, date_or_week_col, role_columns, used_created_rows)]
-
-
-def _write_week_role_grid(ws, rows: List[Dict[str, Any]], sheet_label: str) -> List[str]:
-    """Populate Control/Dispatch/Helitack sheets if they are formatted as grids."""
-    warnings: List[str] = []
-
-    header_row = _find_table_header_row(ws, ["Date", "Week", "Window Start", "Window_Start"])
-    date_or_week_col = _find_column_by_header(
-        ws,
-        header_row,
-        [
-            "Date", "Week", "Window Start", "Window_Start", "Week Starting",
-            "Start", "Start Date", "From", "Period", "Duty Week",
-        ],
-    )
-
-    if date_or_week_col is None:
-        date_or_week_col, _ = _detect_date_column_by_values(ws)
-
-    if date_or_week_col is None:
-        date_or_week_col = ws.max_column + 2
-        ws.cell(row=1, column=date_or_week_col).value = "week"
-        header_row = 1
-        warnings.append(
-            f"{sheet_label}: could not detect a Week/Date column, so a simple week column "
-            "was created on the right of the sheet."
-        )
-
-    role_header_row = _find_role_header_row(ws) or header_row
-    role_columns = _role_columns_from_header(ws, role_header_row)
-
-    if not role_columns:
-        base_col = max(ws.max_column + 1, date_or_week_col + 1)
-        if sheet_label.lower().startswith("control"):
-            created = {"CONTROL": [base_col]}
-            ws.cell(row=1, column=base_col).value = "Control"
-        elif sheet_label.lower().startswith("dispatch"):
-            created = {
-                "DISPATCH_MANAGER": [base_col],
-                "DISPATCHER": [base_col + 1],
-                "TRAINEE_DISPATCHER": [base_col + 2],
-            }
-            ws.cell(row=1, column=base_col).value = "Dispatch Manager"
-            ws.cell(row=1, column=base_col + 1).value = "Dispatcher"
-            ws.cell(row=1, column=base_col + 2).value = "Trainee Dispatcher"
-        else:
-            created = {
-                "CL": [base_col],
-                "ACL": [base_col + 1],
-                "FF": [base_col + 2],
-            }
-            ws.cell(row=1, column=base_col).value = "CL"
-            ws.cell(row=1, column=base_col + 1).value = "ACL"
-            ws.cell(row=1, column=base_col + 2).value = "FF"
-        role_columns = created
-        role_header_row = 1
-        warnings.append(
-            f"{sheet_label}: could not detect role columns, so simple role columns were "
-            "created on the right of the sheet."
-        )
-
-    clear_start_header = max(header_row, role_header_row)
-    _clear_role_cells(ws, clear_start_header, role_columns)
-    row_lookup = _build_week_row_lookup(ws, clear_start_header, date_or_week_col)
-    parsed_rows = _parsed_date_rows(ws, clear_start_header, date_or_week_col)
-    created_rows: Dict[str, int] = {}
-
-    for assignment in rows:
-        week = str(assignment.get("week") or assignment.get("date") or "")
-        week_key = _parse_date(week) or week
-        role = assignment.get("role", "")
-        volunteer_id = assignment.get("volunteer_id", "")
-        category = _role_category(role)
-        cols = _get_available_columns(role_columns, category)
-
-        if not cols:
-            warnings.append(
-                f"{sheet_label} assignment not written: no matching role column for role={role}, "
-                f"week/date={week}, volunteer={volunteer_id}"
-            )
-            continue
-
-        candidate_rows = _candidate_week_rows(
-            ws,
-            week_key,
-            row_lookup,
-            parsed_rows,
-            date_or_week_col,
-            role_columns,
-            created_rows,
-        )
-
-        written = False
-        for row_idx in candidate_rows:
-            if _place_value_in_first_empty(ws, row_idx, cols, volunteer_id):
-                written = True
-                break
-        if not written:
-            warnings.append(
-                f"{sheet_label} assignment not written: could not write to any candidate cell for "
-                f"week/date={week}, role={role}, volunteer={volunteer_id}"
-            )
-
-    return warnings
-
-
-
-# ---------------------------------------------------------------------------
-# Dedicated Control and Dispatch template writers
-# ---------------------------------------------------------------------------
-
-def _first_data_row_from_date_col(ws, header_row: int, date_col: int) -> int:
-    """Return the first row below header_row that contains a parseable date."""
-    for r in range(header_row + 1, ws.max_row + 1):
-        if _parse_date(ws.cell(row=r, column=date_col).value):
-            return r
-    return header_row + 1
-
-
-def _date_rows_from_column(ws, first_data_row: int, date_col: int) -> List[Tuple[str, int]]:
-    """Return (YYYY-MM-DD, row) for all rows with dates in date_col."""
-    out: List[Tuple[str, int]] = []
-    for r in range(first_data_row, ws.max_row + 1):
-        parsed = _parse_date(ws.cell(row=r, column=date_col).value)
-        if parsed:
-            out.append((parsed, r))
-    return out
-
-
-def _find_best_date_col_before_or_near_role(ws, role_header_row: int, role_cols: Iterable[int]) -> Optional[int]:
-    """Find the likely week/date column for Control or Dispatch sheets.
-
-    These sheets often have dates in the columns immediately before the role
-    columns. We intentionally avoid using the role columns themselves, because
-    writing a volunteer ID into a date column breaks formulas and creates #VALUE!.
-    """
-    role_cols = sorted({int(c) for c in role_cols if c})
-    left_limit = min(role_cols) if role_cols else ws.max_column + 1
-
-    # First try obvious header names on the same role-header row and nearby rows.
-    labels = [
-        "Week Starting", "Week Start", "Start", "Start Date", "Date", "Week",
-        "Window Start", "Window_Start", "From", "Duty Week",
-    ]
-    for r in range(max(1, role_header_row - 3), min(ws.max_row, role_header_row + 3) + 1):
-        for c in range(1, left_limit):
-            if _norm_key(ws.cell(row=r, column=c).value) in {_norm_key(x) for x in labels}:
-                return c
-
-    # Then score all columns to the left of the role area by number of real date values.
-    best_col = None
-    best_count = 0
-    for c in range(1, left_limit):
-        count = 0
-        for r in range(1, ws.max_row + 1):
-            if _parse_date(ws.cell(row=r, column=c).value):
-                count += 1
-        if count > best_count:
-            best_count = count
-            best_col = c
-
-    if best_col is not None and best_count > 0:
-        return best_col
-
-    # Final fallback: any date column in the sheet.
-    detected, _ = _detect_date_column_by_values(ws)
-    return detected
-
-
-def _row_for_assignment_date(
-    ws,
-    target_date: str,
-    date_rows: List[Tuple[str, int]],
-    date_col: int,
-    role_columns: Dict[str, List[int]],
-    created_rows: Dict[str, int],
-) -> Optional[int]:
-    """Find the existing template row for target_date.
-
-    Earlier versions appended rows below the Control/Dispatch templates when a
-    date string could not be parsed. That is why duplicate/fallback rows appeared
-    underneath the roster. This version only writes into the existing roster
-    rows. If no row is found, it returns None and reports a warning.
-    """
-    # Exact match first.
-    for parsed, row_idx in date_rows:
-        if parsed == target_date:
-            return row_idx
-
-    # Some sheets use a related date in the same duty window. Use the closest
-    # existing row within 6 days, but never create/append new rows.
-    close: List[Tuple[int, int]] = []
-    for parsed, row_idx in date_rows:
-        gap = _days_between(parsed, target_date)
-        if gap is not None and gap <= 6:
-            close.append((gap, row_idx))
-    if close:
-        close.sort(key=lambda x: (x[0], x[1]))
-        return close[0][1]
-
-    return None
-
-
-def _clear_specific_columns(ws, first_data_row: int, columns: Iterable[int]) -> None:
-    """Clear only the intended assignment columns from first_data_row down."""
-    cols = sorted({int(c) for c in columns if c})
-    if not cols:
-        return
-    _unmerge_ranges_touching_columns(ws, first_data_row, cols)
-    for r in range(first_data_row, ws.max_row + 1):
-        for c in cols:
-            cell = ws.cell(row=r, column=c)
-            if _is_writeable_cell(cell):
-                cell.value = None
-
-
-def _clear_old_fallback_rows_below_template(ws, date_col: int, role_cols: Iterable[int], first_data_row: int) -> None:
-    """Remove values from fallback rows created by older formatter versions.
-
-    Those rows normally appear below the formatted table with ISO dates in the
-    date column and volunteer IDs in the role columns. We clear only rows below
-    the last formatted date row; this keeps the actual roster template intact.
-    """
-    cols = sorted({int(c) for c in role_cols if c})
-    if not cols:
-        return
-
-    # Last row in the visible/formatted roster table: the last parseable date
-    # before any plain ISO fallback block.
-    date_rows = []
-    for r in range(first_data_row, ws.max_row + 1):
-        raw = ws.cell(row=r, column=date_col).value
-        parsed = _parse_date(raw)
-        if parsed:
-            date_rows.append((r, str(raw)))
-
-    if not date_rows:
-        return
-
-    # If a row below the table has a plain YYYY-MM-DD value, older versions
-    # likely appended it. Clear those values and the assignment cells next to it.
-    for r, raw_text in date_rows:
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_text.strip()):
-            ws.cell(row=r, column=date_col).value = None
-            for c in cols:
-                if _is_writeable_cell(ws.cell(row=r, column=c)):
-                    ws.cell(row=r, column=c).value = None
-
-
-def _write_control_roster_template(ws, rows: List[Dict[str, Any]]) -> List[str]:
-    """Populate the existing Control Roster template safely.
-
-    Expected layout in the SU workbook is roughly:
-        # | Week Starting | Ending | Control
-    The only cell that should receive the volunteer ID is the Control column.
-    """
-    warnings: List[str] = []
-    if not rows:
-        return warnings
-
-    # Do not use the broad role-header detector first here: the title row often
-    # contains words like "ControlDuty" and can be mistaken for the actual
-    # Control assignment column. Prefer an exact cell that says "Control".
-    role_header_row = 1
-    role_columns: Dict[str, List[int]] = {}
-    control_cols: List[int] = []
-    for r in range(1, min(ws.max_row, 15) + 1):
-        for c in range(1, ws.max_column + 1):
-            if _norm_key(ws.cell(row=r, column=c).value) == "CONTROL":
-                role_header_row = r
-                control_cols = [c]
-                role_columns = {"CONTROL": control_cols}
-                break
-        if control_cols:
-            break
-
-    if not control_cols:
-        role_header_row = _find_role_header_row(ws) or _find_table_header_row(ws, ["Control"])
-        role_columns = _role_columns_from_header(ws, role_header_row)
-        control_cols = role_columns.get("CONTROL", [])
-
-    if not control_cols:
-        # Last resort: create a Control column to the right, but do not overwrite existing dates.
-        c = ws.max_column + 1
-        ws.cell(row=1, column=c).value = "Control"
-        role_header_row = 1
-        control_cols = [c]
-        role_columns = {"CONTROL": control_cols}
-        warnings.append("Control Roster: no Control column was detected, so one was created on the right.")
-
-    date_col = _find_best_date_col_before_or_near_role(ws, role_header_row, control_cols)
-    if date_col is None:
-        # Create a week column just before/near the output area.
-        date_col = max(1, min(control_cols) - 1)
-        ws.cell(row=role_header_row, column=date_col).value = "Week Starting"
-        warnings.append("Control Roster: no Week Starting column was detected, so one was created.")
-
-    first_data_row = _first_data_row_from_date_col(ws, role_header_row, date_col)
-    _clear_specific_columns(ws, first_data_row, control_cols)
-    _clear_old_fallback_rows_below_template(ws, date_col, control_cols, first_data_row)
-
-    date_rows = _date_rows_from_column(ws, first_data_row, date_col)
-    created_rows: Dict[str, int] = {}
-
-    for assignment in rows:
-        week_raw = assignment.get("week") or assignment.get("date") or ""
-        week_key = _parse_date(week_raw) or str(week_raw)
-        volunteer_id = assignment.get("volunteer_id", "")
-        row_idx = _row_for_assignment_date(ws, week_key, date_rows, date_col, role_columns, created_rows)
-        if row_idx is None:
-            warnings.append(
-                f"Control Roster assignment not written: no existing template row for week/date={week_raw}, "
-                f"volunteer={volunteer_id}"
-            )
-            continue
-        if not _place_value_in_first_empty(ws, row_idx, control_cols, volunteer_id):
-            warnings.append(
-                f"Control Roster assignment not written: could not write week/date={week_raw}, "
-                f"volunteer={volunteer_id}"
-            )
-
-    return warnings
-
-
-def _write_dispatch_roster_template(ws, rows: List[Dict[str, Any]]) -> List[str]:
-    """Populate the existing Dispatch Roster template safely.
-
-    Expected layout in the SU workbook is roughly:
-        Week Starting | Ending | Dispatch Manager | Dispatcher | Trainee Dispatcher
-    """
-    warnings: List[str] = []
-    if not rows:
-        return warnings
-
-    role_header_row = _find_role_header_row(ws) or _find_table_header_row(ws, ["Dispatch Manager", "Dispatcher"])
-    role_columns = _role_columns_from_header(ws, role_header_row)
-
-    needed = ["DISPATCH_MANAGER", "DISPATCHER", "TRAINEE_DISPATCHER"]
-    if not any(k in role_columns for k in needed):
-        # Manual scan of top rows. This handles merged/title rows above the actual headers.
-        best_row = role_header_row
-        best_cols: Dict[str, List[int]] = {}
-        best_count = 0
-        for r in range(1, min(ws.max_row, 10) + 1):
-            cols = _role_columns_from_header(ws, r)
-            count = sum(len(cols.get(k, [])) for k in needed)
-            if count > best_count:
-                best_row = r
-                best_cols = cols
-                best_count = count
-        if best_count:
-            role_header_row = best_row
-            role_columns = best_cols
-
-    if not any(k in role_columns for k in needed):
-        # Last resort: create the three dispatch role columns on the right.
-        start = ws.max_column + 1
-        role_header_row = 1
-        role_columns = {
-            "DISPATCH_MANAGER": [start],
-            "DISPATCHER": [start + 1],
-            "TRAINEE_DISPATCHER": [start + 2],
-        }
-        ws.cell(row=role_header_row, column=start).value = "Dispatch Manager"
-        ws.cell(row=role_header_row, column=start + 1).value = "Dispatcher"
-        ws.cell(row=role_header_row, column=start + 2).value = "Trainee Dispatcher"
-        warnings.append("Dispatch Roster: dispatch role columns were not detected, so they were created on the right.")
-
-    all_role_cols = sorted({c for k in needed for c in role_columns.get(k, [])})
-    date_col = _find_best_date_col_before_or_near_role(ws, role_header_row, all_role_cols)
-    if date_col is None:
-        date_col = 1
-        ws.cell(row=role_header_row, column=date_col).value = "Week Starting"
-        warnings.append("Dispatch Roster: no Week Starting column was detected, so one was created.")
-
-    first_data_row = _first_data_row_from_date_col(ws, role_header_row, date_col)
-    _clear_specific_columns(ws, first_data_row, all_role_cols)
-    _clear_old_fallback_rows_below_template(ws, date_col, all_role_cols, first_data_row)
-
-    date_rows = _date_rows_from_column(ws, first_data_row, date_col)
-    created_rows: Dict[str, int] = {}
-
-    for assignment in rows:
-        week_raw = assignment.get("week") or assignment.get("date") or ""
-        week_key = _parse_date(week_raw) or str(week_raw)
-        role = assignment.get("role", "")
-        volunteer_id = assignment.get("volunteer_id", "")
-        category = _role_category(role)
-        cols = _get_available_columns(role_columns, category)
-
-        if not cols:
-            warnings.append(
-                f"Dispatch Roster assignment not written: no matching role column for role={role}, "
-                f"week/date={week_raw}, volunteer={volunteer_id}"
-            )
-            continue
-
-        row_idx = _row_for_assignment_date(ws, week_key, date_rows, date_col, role_columns, created_rows)
-        if row_idx is None:
-            warnings.append(
-                f"Dispatch Roster assignment not written: no existing template row for week/date={week_raw}, "
-                f"role={role}, volunteer={volunteer_id}"
-            )
-            continue
-        if not _place_value_in_first_empty(ws, row_idx, cols, volunteer_id):
-            warnings.append(
-                f"Dispatch Roster assignment not written: could not write week/date={week_raw}, "
-                f"role={role}, volunteer={volunteer_id}"
-            )
-
-    return warnings
-
 # ---------------------------------------------------------------------------
 # Optional helitack writer
 # ---------------------------------------------------------------------------
@@ -1414,52 +948,76 @@ def write_roster(solution, template_excel_file: str, output_excel_file: Optional
 
 def write_dummy_roster(template_excel_file: str, output_excel_file: Optional[str] = None) -> None:
     '''
-    Testing helper: writes a dummy grid-style solution into the actual workbook.
+    Testing helper: writes a dummy solution into the actual workbook.
 
-    Use this to check that the formatter is populating the correct existing
-    cells before relying on the real CP-SAT solution.
+    Covers all three roster types (VWS, Control, Dispatch) and multiple bases
+    so you can visually verify the formatter is populating the correct cells
+    before relying on the real CP-SAT solution.
+
+    VWS assignments use role strings exactly as Scheduler produces them
+    (e.g. "CL", "ACL", "FF", "crew_driver", "skid_driver", "planning",
+    "logistics", "recruit_FF").
     '''
     rows = {
         "vws": [
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "CL", "volunteer_id": "dummy_CL_001"},
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "ACL", "volunteer_id": "dummy_ACL_001"},
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "FF", "volunteer_id": "dummy_FF_001"},
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "FF", "volunteer_id": "dummy_FF_002"},
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "Crew Driver", "volunteer_id": "dummy_DRIVER_001"},
-            {"date": "2025-11-15", "base": "NWL HC1", "role": "Skid Driver", "volunteer_id": "dummy_SKID_001"},
+            # NWL HC1 — full crew
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "CL",          "volunteer_id": "TST_CL_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "ACL",         "volunteer_id": "TST_ACL_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "FF",          "volunteer_id": "TST_FF1_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "FF",          "volunteer_id": "TST_FF2_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "recruit_FF",  "volunteer_id": "TST_NR1_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "crew_driver", "volunteer_id": "TST_DRV_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "planning",    "volunteer_id": "TST_PLAN_NWL1"},
+            {"date": "2025-11-15", "base": "NWL HC1", "role": "logistics",   "volunteer_id": "TST_LS_NWL1"},
+            # NWL SU — skid-unit crew
+            {"date": "2025-11-22", "base": "NWL SU",  "role": "CL",          "volunteer_id": "TST_CL_SU"},
+            {"date": "2025-11-22", "base": "NWL SU",  "role": "FF",          "volunteer_id": "TST_FF_SU"},
+            {"date": "2025-11-22", "base": "NWL SU",  "role": "skid_driver", "volunteer_id": "TST_SKID_SU"},
+            # SPS BP — larger crew to test multi-row fill
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "CL",          "volunteer_id": "TST_CL_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "ACL",         "volunteer_id": "TST_ACL1_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "ACL",         "volunteer_id": "TST_ACL2_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "FF",          "volunteer_id": "TST_FF1_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "FF",          "volunteer_id": "TST_FF2_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "FF",          "volunteer_id": "TST_FF3_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "recruit_FF",  "volunteer_id": "TST_NR1_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "recruit_FF",  "volunteer_id": "TST_NR2_SPS"},
+            {"date": "2025-11-29", "base": "SPS BP",  "role": "crew_driver", "volunteer_id": "TST_DRV_SPS"},
+            # HDB HC/SU
+            {"date": "2025-11-29", "base": "HDB HC/SU", "role": "CL",        "volunteer_id": "TST_CL_HDB"},
+            {"date": "2025-11-29", "base": "HDB HC/SU", "role": "ACL",       "volunteer_id": "TST_ACL_HDB"},
+            {"date": "2025-11-29", "base": "HDB HC/SU", "role": "FF",        "volunteer_id": "TST_FF_HDB"},
+            {"date": "2025-11-29", "base": "HDB HC/SU", "role": "crew_driver","volunteer_id": "TST_DRV_HDB"},
+            {"date": "2025-11-29", "base": "HDB HC/SU", "role": "skid_driver","volunteer_id": "TST_SKID_HDB"},
+            # STB HC
+            {"date": "2025-11-22", "base": "STB HC",  "role": "CL",          "volunteer_id": "TST_CL_STB"},
+            {"date": "2025-11-22", "base": "STB HC",  "role": "ACL",         "volunteer_id": "TST_ACL_STB"},
+            {"date": "2025-11-22", "base": "STB HC",  "role": "FF",          "volunteer_id": "TST_FF_STB"},
+            {"date": "2025-11-22", "base": "STB HC",  "role": "crew_driver", "volunteer_id": "TST_DRV_STB"},
         ],
-        "helitack": [],
+        "helitack": [
+            # Helitack assignments are merged into VWS Roster as "Helitack STB" rows
+            {"date": "2025-11-15", "role": "CL",    "volunteer_id": "TST_HELI_CL"},
+            {"date": "2025-11-15", "role": "ACL",   "volunteer_id": "TST_HELI_ACL"},
+            {"date": "2025-11-15", "role": "FF",    "volunteer_id": "TST_HELI_FF1"},
+            {"date": "2025-11-15", "role": "FF2YR", "volunteer_id": "TST_HELI_FF2YR"},
+        ],
         "control": [
-            {"week": "2025-11-28", "role": "Control", "volunteer_id": "dummy_CTRL_001"},
+            # Control roster — one person per week; weeks start 2025-12-03
+            {"week": "2025-12-03", "role": "Control", "volunteer_id": "TST_CTRL_W1"},
+            {"week": "2025-12-10", "role": "Control", "volunteer_id": "TST_CTRL_W2"},
+            {"week": "2025-12-17", "role": "Control", "volunteer_id": "TST_CTRL_W3"},
         ],
         "dispatch": [
-            {"week": "2025-11-28", "role": "mgr", "volunteer_id": "dummy_DISP_MGR_001"},
-            {"week": "2025-11-28", "role": "norm", "volunteer_id": "dummy_DISP_001"},
+            # Dispatch roster — up to three roles per week; weeks start 2025-11-28
+            {"week": "2025-11-28", "role": "mgr",     "volunteer_id": "TST_DISP_MGR_W1"},
+            {"week": "2025-11-28", "role": "norm",    "volunteer_id": "TST_DISP_NORM_W1"},
+            {"week": "2025-11-28", "role": "trainee", "volunteer_id": "TST_DISP_TRNEE_W1"},
+            {"week": "2025-12-05", "role": "mgr",     "volunteer_id": "TST_DISP_MGR_W2"},
+            {"week": "2025-12-05", "role": "norm",    "volunteer_id": "TST_DISP_NORM_W2"},
         ],
     }
     _write_rows_into_template(rows, template_excel_file, output_excel_file)
-
-
-# ===========================================================================
-# v7 OVERRIDES: robust Control + Dispatch table population
-# ---------------------------------------------------------------------------
-# These override the earlier Control/Dispatch writers above. They do NOT touch
-# Scheduler.py or the VWS writer. The fix is specifically for templates where
-# the displayed dates after the first row are Excel formulas. openpyxl reads
-# those formula cells as strings like '=B3+7', so simple date parsing fails.
-# These functions infer the weekly date sequence from the first real date row
-# and then write assignments into the existing table rows only.
-# ===========================================================================
-
-from datetime import timedelta as _timedelta
-
-
-def _cell_has_formula(value: Any) -> bool:
-    return isinstance(value, str) and value.strip().startswith("=")
-
-
-def _is_blank(value: Any) -> bool:
-    return value is None or str(value).strip() == ""
 
 
 def _find_exact_header_cell(ws, labels: Iterable[str], max_rows: int = 20) -> Optional[Tuple[int, int]]:

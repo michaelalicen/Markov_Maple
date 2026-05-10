@@ -21134,6 +21134,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-11-16": {
@@ -21142,6 +21143,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-11-22": {
@@ -21150,6 +21152,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-11-23": {
@@ -21158,6 +21161,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-11-29": {
@@ -21166,6 +21170,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-11-30": {
@@ -21174,6 +21179,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-06": {
@@ -21182,6 +21188,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-07": {
@@ -21190,6 +21197,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-13": {
@@ -21198,6 +21206,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-14": {
@@ -21206,6 +21215,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-20": {
@@ -21214,6 +21224,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-21": {
@@ -21222,6 +21233,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-27": {
@@ -21230,6 +21242,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2025-12-28": {
@@ -21238,6 +21251,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-03": {
@@ -21246,6 +21260,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-04": {
@@ -21254,6 +21269,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-10": {
@@ -21262,6 +21278,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-11": {
@@ -21270,6 +21287,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-17": {
@@ -21278,6 +21296,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-18": {
@@ -21286,6 +21305,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-24": {
@@ -21294,6 +21314,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-25": {
@@ -21302,6 +21323,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-01-31": {
@@ -21310,6 +21332,7 @@
         "FF": 4,
         "recruit_FF": 2,
         "crew_driver": 1,
+        "planning": 1,
         "logistics": 1
       },
       "2026-02-01": {
@@ -21804,56 +21827,56 @@
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-02-07": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-02-14": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-02-21": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-02-28": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-03-07": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-03-14": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       },
       "2026-03-21": {
         "CL": 1,
         "ACL": 2,
         "FF": 6,
         "recruit_FF": 2,
-        "crew_driver": 2
+        "crew_driver": 1
       }
     },
     "SPS_HC": {

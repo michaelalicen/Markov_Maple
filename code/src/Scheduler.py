@@ -72,20 +72,22 @@ def build_and_solve(data):
         for d in date:
             for b in base:
                 for r in role:
-                    # planning is only valid at NWL_HC1 — block it everywhere else
-                    if str(r) == 'planning' and str(b) != 'NWL_HC1':
-                        continue
                     if (availability.get(v, {}).get(d, False)
                         and base_eligibility(v, b, qual)):
                         x[v, d, b, r] = model.NewBoolVar(f"x[{v},{d},{b},{r}]")
 
     # helitack variable — only for heli_week dates, NOT all VWS dates
+    # FF2YR volunteers get a variable for both "FF2YR" and "FF" so the solver
+    # can assign them to either slot (e.g. cover an FF slot when needed).
     x_heli = {}
     for v in heli_volunteer:
         v_role = heli_qual.get(v, {}).get("role")
         if v_role:
             for d in heli_week:
                 x_heli[v, d, v_role] = model.NewBoolVar(f"heli[{v},{d},{v_role}]")
+                if v_role == "FF2YR":
+                    # Extra variable so this volunteer can fill an FF slot
+                    x_heli[v, d, "FF"] = model.NewBoolVar(f"heli[{v},{d},FF]")
 
     # control variable
     x_ctrl = {}
@@ -130,23 +132,6 @@ def build_and_solve(data):
         try:
             zero_vols = [v for v in volunteer if int(totals.get(v, 0)) == 0]
             log_print(f"\n[Diag] Volunteers with zero shifts: {len(zero_vols)} / {len(volunteer)}")
-        except Exception:
-            pass
-
-        # Log NWL_HC1 planner assignments (VWS role='planning')
-        try:
-            planners = [(v, d) for (v, d, b, r) in assigned_vws if str(b) == 'NWL_HC1' and str(r) == 'planning']
-            if planners:
-                log_print("\n--- NWL_HC1 planner assignments ---")
-                by_date = {}
-                for v, d in planners:
-                    by_date.setdefault(d, []).append(v)
-                for d in (data.get('date', []) or sorted(by_date.keys())):
-                    vols = sorted(by_date.get(d, []))
-                    if vols:
-                        log_print(f"  {d}: {', '.join(vols)}")
-            else:
-                log_print("\n--- NWL_HC1 planner assignments ---\n  (none)")
         except Exception:
             pass
 
@@ -196,6 +181,7 @@ def build_and_solve(data):
         )
         _log_solution_stats(totals, consec, burnout_vols_initial)
         _log_unpaired_requests(assigned_vws, data)
+        _print_schedule_by_base(assigned_vws, assigned_heli, data)
     except Exception as e:
         log_print(f"[Warning] Could not log initial stats: {e}")
 
@@ -278,7 +264,6 @@ def hard_constraints(model, data, x, x_ctrl, x_disp, x_heli):
     demand_contr_disp(model, data, x_ctrl, x_disp)
     no_overlap(model, data, x, x_ctrl, x_disp)
     trainee_with_senior(model, x)
-    require_planning_on_nwl_hc1(model, data, x)
     restrict_extra_shift_roles(model, data, x)
 
 
@@ -313,49 +298,25 @@ def restrict_extra_shift_roles(model, data, x):
 
         model.Add(sum(unapproved_vars) <= 5)
 
+SOFT_DEMAND_ROLES = {'trainee_ACL'}
 
-def require_planning_on_nwl_hc1(model, data, x):
-    demand_local = data.get('demand', {}) or {}
-    nwl_hc1_demand = demand_local.get('NWL_HC1', {}) or {}
+# recruit_FF fallback variables: keyed (v, d, b) for FF volunteers covering a recruit_FF slot.
+# Built in demand_general and consumed by soft_constraints to apply a heavy penalty.
+_recruit_ff_fallback_vars = []
 
-    for d, role_dict in nwl_hc1_demand.items():
-        if not (role_dict or {}).get('planning'):
-            continue
-
-        senior_vars = [
-            x[v, d, 'NWL_HC1', 'planning']
-            for v in volunteer
-            if (v, d, 'NWL_HC1', 'planning') in x
-            and 'planning' in [str(r) for r in (qual.get(v, {}).get('role') or [])]
-        ]
-
-        trainee_vars = [
-            x[v, d, 'NWL_HC1', 'planning']
-            for v in volunteer
-            if (v, d, 'NWL_HC1', 'planning') in x
-            and 'planning' in [str(r) for r in (qual.get(v, {}).get('trainee_roles') or [])]
-            and 'planning' not in [str(r) for r in (qual.get(v, {}).get('role') or [])]
-        ]
-
-        if senior_vars:
-            model.Add(sum(senior_vars) == 1)
-        else:
-            log_print(f"[Warning] No eligible senior planner for NWL_HC1 on {d}; planning constraint skipped.")
-            continue
-
-        if trainee_vars:
-            model.Add(sum(trainee_vars) <= 1)
-
-
-SOFT_DEMAND_ROLES = {'recruit_FF', 'trainee_ACL'}
-DEMAND_GENERAL_EXCLUDED_ROLES = {'planning'}
+# recruit_FF slack variables: one per (d, b) slot where demand > 0.
+# Non-zero slack means the slot could not be filled; penalised heavily in the objective
+# so the solver only leaves slots unfilled as an absolute last resort.
+_recruit_ff_slack_vars = []
 
 def demand_general(model, x):
+    global _recruit_ff_fallback_vars, _recruit_ff_slack_vars
+    _recruit_ff_fallback_vars = []
+    _recruit_ff_slack_vars = []
+
     for d in date:
         for b in base:
             for r in role:
-                if str(r) in DEMAND_GENERAL_EXCLUDED_ROLES:
-                    continue
                 required = int(demand.get(b, {}).get(d, {}).get(r) or 0)
                 assigned = [
                     x[v, d, b, r]
@@ -364,6 +325,41 @@ def demand_general(model, x):
                 ]
                 if str(r) in SOFT_DEMAND_ROLES:
                     model.Add(sum(assigned) <= required)
+                elif str(r) == 'recruit_FF':
+                    # recruit_FF must always be filled. If there are not enough
+                    # recruit_FF volunteers, FF volunteers may cover the gap but
+                    # are penalised heavily so the solver treats them as a last resort.
+                    if required == 0:
+                        if assigned:
+                            model.Add(sum(assigned) == 0)
+                        continue
+
+                    # Fallback: FF volunteers who are available for this slot
+                    # but are NOT already a recruit_FF volunteer on this day/base.
+                    recruit_ff_vols = set(
+                        v for v in volunteer
+                        if (v, d, b, 'recruit_FF') in x
+                    )
+                    fallback_vars = []
+                    for v in volunteer:
+                        if (v, d, b, 'FF') not in x:
+                            continue
+                        if v in recruit_ff_vols:
+                            continue  # already counted in primary assigned list
+                        fb = model.NewBoolVar(f"fb_recruit_FF[{v},{d},{b}]")
+                        # A fallback slot can only be active when the FF
+                        # volunteer is actually assigned to FF on this day/base.
+                        model.Add(fb <= x[v, d, b, 'FF'])
+                        fallback_vars.append(fb)
+                        _recruit_ff_fallback_vars.append(fb)
+
+                    # Total filled = primary recruit_FF + fallback FF slots + slack.
+                    # Using a slack variable makes this a soft constraint: the solver
+                    # will always find a feasible solution, and any unfilled slots are
+                    # penalised very heavily in the objective (see soft_constraints).
+                    slack = model.NewIntVar(0, required, f"recruit_FF_slack[{d},{b}]")
+                    _recruit_ff_slack_vars.append(slack)
+                    model.Add(sum(assigned) + sum(fallback_vars) + slack == required)
                 else:
                     model.Add(sum(assigned) == required)
 
@@ -371,6 +367,15 @@ def demand_general(model, x):
 def demand_heli(model, data, x_heli):
     heli_demand = data.get("heli_demand", {})
     heli_dates = data.get("heli_week", date)
+
+    # Mutual exclusion: FF2YR volunteers have variables for both "FF2YR" and
+    # "FF" roles, but they can only be assigned to one slot per date.
+    for d in heli_dates:
+        for v in heli_volunteer:
+            ff2yr_var = x_heli.get((v, d, "FF2YR"))
+            ff_var    = x_heli.get((v, d, "FF"))
+            if ff2yr_var is not None and ff_var is not None:
+                model.Add(ff2yr_var + ff_var <= 1)
 
     for d in heli_dates:
         role_map = heli_demand.get(d, {})
@@ -380,7 +385,7 @@ def demand_heli(model, data, x_heli):
                 continue
             assigned = [
                 var for (v_key, d_key, r_key), var in x_heli.items()
-                if d_key == d and _compatible(r_key, heli_role)
+                if d_key == d and r_key == heli_role
             ]
             model.Add(sum(assigned) == required)
 
@@ -771,6 +776,17 @@ def soft_constraints(model, data, x, x_ctrl, x_disp, x_heli, forced_available=No
     if pair_penalties:
         weighted_terms.append((sum(pair_penalties), 1))
 
+    # Penalise FF volunteers covering recruit_FF slots as a last resort.
+    # Weight is very high (50 000) so the solver only uses fallbacks when
+    # no recruit_FF volunteer is available to fill the slot.
+    if _recruit_ff_fallback_vars:
+        weighted_terms.append((sum(_recruit_ff_fallback_vars), 50000))
+
+    # Penalise unfilled recruit_FF slots (slack > 0) even more heavily than
+    # fallbacks, so the solver treats leaving a slot empty as a true last resort.
+    if _recruit_ff_slack_vars:
+        weighted_terms.append((sum(_recruit_ff_slack_vars), 200000))
+
     if weighted_terms:
         obj_terms = [expr * weight for expr, weight in weighted_terms]
         model.Minimize(sum(obj_terms))
@@ -1140,3 +1156,74 @@ def _log_unpaired_requests(assigned_vws, data):
     log_print(f"\nUnmet pairing requests: {len(missing)}")
     for v1, v2 in missing:
         log_print(f"  {v1} + {v2}")
+
+
+def _print_schedule_by_base(assigned_vws, assigned_heli, data):
+    """Print the full VWS schedule grouped by base, then date, then role,
+    followed by the helitack schedule grouped by date, then role."""
+    # --- VWS section ---
+    # Build nested structure: schedule[base][date][role] = [volunteers]
+    schedule = {}
+    for (v, d, b, r) in assigned_vws:
+        schedule.setdefault(str(b), {}).setdefault(str(d), {}).setdefault(str(r), []).append(v)
+ 
+    # Use the ordering from the original data where available
+    ordered_bases = [str(b) for b in (data.get('base') or sorted(schedule.keys()))]
+    ordered_dates = [str(d) for d in (data.get('date') or [])]
+    ordered_roles = [str(r) for r in (data.get('role') or [])]
+ 
+    lines = ["\n--- Schedule by Base ---"]
+    for b in ordered_bases:
+        if b not in schedule:
+            continue
+        lines.append(f"{b} {{")
+ 
+        dates_for_base = schedule[b]
+        date_order = [d for d in ordered_dates if d in dates_for_base] or sorted(dates_for_base.keys())
+ 
+        for d in date_order:
+            roles_for_date = dates_for_base[d]
+            lines.append(f"    {d} {{")
+ 
+            role_order = [r for r in ordered_roles if r in roles_for_date] or sorted(roles_for_date.keys())
+ 
+            for r in role_order:
+                for v in sorted(roles_for_date[r]):
+                    lines.append(f"        {r} : {v}")
+ 
+            lines.append("    }")
+ 
+        lines.append("}")
+ 
+    log_print("\n".join(lines))
+ 
+    # --- Helitack section ---
+    # Build nested structure: heli_schedule[date][role] = [volunteers]
+    heli_schedule = {}
+    for (v, d, r) in assigned_heli:
+        heli_schedule.setdefault(str(d), {}).setdefault(str(r), []).append(v)
+ 
+    # Use heli_week for date ordering, and heli_qual roles as a fallback
+    ordered_heli_dates = [str(d) for d in (data.get('heli_week') or [])]
+    ordered_heli_roles = sorted({
+        heli_q.get('role')
+        for heli_q in (data.get('heli_qual') or {}).values()
+        if heli_q.get('role')
+    })
+ 
+    lines = ["\n--- Schedule by Heli ---"]
+    date_order = [d for d in ordered_heli_dates if d in heli_schedule] or sorted(heli_schedule.keys())
+ 
+    for d in date_order:
+        roles_for_date = heli_schedule[d]
+        lines.append(f"{d} {{")
+ 
+        role_order = [r for r in ordered_heli_roles if r in roles_for_date] or sorted(roles_for_date.keys())
+ 
+        for r in role_order:
+            for v in sorted(roles_for_date[r]):
+                lines.append(f"    {r} : {v}")
+ 
+        lines.append("}")
+ 
+    log_print("\n".join(lines))
