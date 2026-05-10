@@ -14,13 +14,13 @@ AUDIT_DIR        := $(OUTPUT_DIR)/mapping_audit
 RAW_CSV          := $(AUDIT_DIR)/raw_solution_all.csv
 DIAGNOSE_LOG     := $(OUTPUT_DIR)/diagnose_log.txt
 
-# ── default: show available commands ────────────────────────────────────────
+# default: show available commands 
 .PHONY: help
 help:
 	@echo ""
 	@echo "  VWS Rostering — available commands"
 	@echo ""
-	@echo "  make clean-data     run data_cleaning.py  → produces $(JSON_OUT)"
+	@echo "  make clean-data     run data_cleaning.py  → produces $(JSON_OUT) (currently not 100%)"
 	@echo "  make solve          run CP-SAT solver      → produces $(ROSTER_OUT)"
 	@echo "                                               solver log → $(OUTPUT_DIR)/solver_log.txt"
 	@echo "  make diagnose       solve + audit in one go → $(DIAGNOSE_LOG)"
@@ -31,14 +31,14 @@ help:
 	@echo "  make check          validate JSON exists and is readable"
 	@echo ""
 
-# ── data cleaning ────────────────────────────────────────────────────────────
-.PHONY: clean-data
-clean-data:
-	@echo "→ Running data cleaning..."
-	$(PYTHON) $(CLEANING_SCRIPT) $(WORKBOOK) $(JSON_OUT)
-	@echo "✓ JSON written to $(JSON_OUT)"
+# data cleaning 
+# .PHONY: clean-data
+# clean-data:
+# 	@echo "→ Running data cleaning..."
+# 	$(PYTHON) $(CLEANING_SCRIPT) $(WORKBOOK) $(JSON_OUT)
+# 	#@echo "✓ JSON written to $(JSON_OUT)"
 
-# ── solver only ──────────────────────────────────────────────────────────────
+# solver only 
 # Diagnostic log written automatically by Main.py via logger.py
 .PHONY: solve
 solve: check
@@ -46,7 +46,7 @@ solve: check
 	@echo "→ Running solver..."
 	$(PYTHON) $(SOLVER_SCRIPT) $(JSON_OUT)
 
-# ── solve + full diagnostic audit (RERUNS the solver) ────────────────────────
+# solve + full diagnostic audit (RERUNS the solver) 
 # Use this when you want to audit whether OutputFormatter placed everything
 # correctly. It resolves, saves the raw assignment CSV, writes the workbook,
 # then audits the workbook against the raw CSV.
@@ -66,7 +66,7 @@ diagnose: check
 	@echo "✓ Audit CSVs in      $(AUDIT_DIR)/"
 	@echo "✓ Full log at        $(DIAGNOSE_LOG)"
 
-# ── audit only (does NOT rerun the solver) ───────────────────────────────────
+# audit only (does NOT rerun the solver) 
 # Audits an already-produced workbook against the raw CSV from a previous
 # 'make diagnose' run. Fast — no solving involved.
 # Requires: $(RAW_CSV) and $(ROSTER_OUT) to already exist.
@@ -89,11 +89,18 @@ audit-only:
 	@echo "✓ Audit CSVs in  $(AUDIT_DIR)/"
 	@echo "✓ Full log at    $(DIAGNOSE_LOG)"
 
-# ── run both in sequence ─────────────────────────────────────────────────────
+# run both in sequence 
 .PHONY: all
-all: clean-data solve
+all: solve
 
-# ── sanity check the JSON ────────────────────────────────────────────────────
+# install requirements
+.PHONY: install
+install:
+	@echo "→ Installing requirements..."
+	$(PYTHON) -m pip install ortools
+	$(PYTHON) -m pip install openpyxl
+
+# sanity check the JSON 
 .PHONY: check
 check:
 	@test -f $(JSON_OUT) || \
